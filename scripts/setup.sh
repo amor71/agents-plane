@@ -758,6 +758,47 @@ else
 fi
 success "SA key stored in Secret Manager (agents-plane-sa-key)"
 
+# Store shared Anthropic API key for agent provisioning
+step "Configuring shared AI API key for agent bootstrap..."
+if gcloud secrets describe agents-shared-anthropic-key --project="$PROJECT_ID" &>/dev/null; then
+  success "Shared Anthropic key already exists in Secret Manager"
+  read -rp "  Update the key? (y/N): " update_key
+  if [[ "$update_key" =~ ^[Yy] ]]; then
+    echo ""
+    info "This key is used for the initial agent conversation (bootstrap + welcome email)."
+    info "Agents can later be configured with their own keys."
+    echo ""
+    read -rsp "  Enter Anthropic API key (sk-ant-...): " ANTHROPIC_KEY
+    echo ""
+    if [[ -z "$ANTHROPIC_KEY" ]]; then
+      warn "No key entered — keeping existing key"
+    else
+      echo -n "$ANTHROPIC_KEY" | gcloud secrets versions add agents-shared-anthropic-key \
+        --project="$PROJECT_ID" --data-file=- &>/dev/null
+      success "Anthropic key updated"
+    fi
+  fi
+else
+  echo ""
+  info "A shared Anthropic API key is needed for the initial agent bootstrap."
+  info "This key allows new agents to send a welcome email and have their first"
+  info "conversation with their owner. Agents can later be configured with their own keys."
+  info ""
+  info "Get a key at: https://console.anthropic.com/settings/keys"
+  echo ""
+  read -rsp "  Enter Anthropic API key (sk-ant-...): " ANTHROPIC_KEY
+  echo ""
+  if [[ -z "$ANTHROPIC_KEY" ]]; then
+    warn "No key entered — agents won't be able to start conversations"
+    warn "You can add one later: gcloud secrets create agents-shared-anthropic-key --data-file=<key-file>"
+  else
+    echo -n "$ANTHROPIC_KEY" | gcloud secrets create agents-shared-anthropic-key \
+      --project="$PROJECT_ID" --replication-policy=automatic --data-file=- &>/dev/null
+    success "Anthropic key stored in Secret Manager (agents-shared-anthropic-key)"
+  fi
+fi
+
+
 info "Network ready: VPC + Subnet + NAT + IAP SSH + deny-all ingress"
 
 
