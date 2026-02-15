@@ -296,15 +296,35 @@ cat > /home/agent/.openclaw/agents/main/agent/auth-profiles.json << AUTHEOF
 AUTHEOF
 chown -R agent:agent /home/agent/.openclaw/agents/
 
-# Write gateway config
+# Write gateway config (must match OpenClaw's expected schema)
+GATEWAY_TOKEN=$(openssl rand -hex 32)
 cat > /home/agent/.openclaw/openclaw.json << CFGEOF
 {
-  "ai": {
-    "model": "anthropic/\$AGENT_MODEL"
+  "agents": {
+    "defaults": {
+      "workspace": "/home/agent/.openclaw/workspace",
+      "models": {
+        "anthropic/\$AGENT_MODEL": {}
+      }
+    },
+    "list": [
+      {
+        "id": "main",
+        "default": true,
+        "identity": {
+          "name": "\$AGENT_NAME"
+        }
+      }
+    ]
   },
-  "system": {
-    "name": "\$AGENT_NAME",
-    "workspace": "/home/agent/.openclaw/workspace"
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "mode": "token",
+      "token": "\$GATEWAY_TOKEN"
+    }
   }
 }
 CFGEOF
@@ -405,29 +425,47 @@ chown -R agent:agent /home/agent/.config/himalaya/
 logger "🤖 Agents Plane: OpenClaw + Gmail (OAuth2 via domain-wide delegation) configured"
 
 # --- 12. Start OpenClaw gateway ---
-# Run as agent user, in background, with systemd service
-cat > /etc/systemd/system/openclaw-agent.service << SVCEOF
+# OpenClaw uses user-level systemd, so we need lingering + user service
+
+# Enable lingering so user services start at boot (not just on login)
+loginctl enable-linger agent
+
+# Find openclaw's node entry point
+OPENCLAW_BIN=$(which openclaw)
+OPENCLAW_MAIN=$(node -e "console.log(require('path').resolve(require('path').dirname(require('fs').realpathSync('$OPENCLAW_BIN')), '..', 'lib', 'node_modules', 'openclaw', 'dist', 'index.js'))" 2>/dev/null || echo "/usr/lib/node_modules/openclaw/dist/index.js")
+NODE_BIN=$(which node)
+
+# Create user systemd directory
+su - agent -c "mkdir -p ~/.config/systemd/user"
+
+cat > /home/agent/.config/systemd/user/openclaw-gateway.service << SVCEOF
 [Unit]
-Description=OpenClaw Agent (\$AGENT_NAME)
+Description=OpenClaw Gateway (\$AGENT_NAME)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
-User=agent
-WorkingDirectory=/home/agent/.openclaw/workspace
-ExecStart=/usr/bin/openclaw gateway start
+ExecStart=\$NODE_BIN \$OPENCLAW_MAIN gateway --port 18789
 Restart=always
-RestartSec=10
+RestartSec=5
+KillMode=process
 Environment=HOME=/home/agent
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=OPENCLAW_GATEWAY_PORT=18789
+Environment=OPENCLAW_GATEWAY_TOKEN=\$GATEWAY_TOKEN
+Environment=OPENCLAW_SYSTEMD_UNIT=openclaw-gateway.service
+Environment=OPENCLAW_SERVICE_MARKER=openclaw
+Environment=OPENCLAW_SERVICE_KIND=gateway
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 SVCEOF
+chown -R agent:agent /home/agent/.config/systemd/
 
-systemctl daemon-reload
-systemctl enable openclaw-agent
-systemctl start openclaw-agent
+# Enable and start the user service
+su - agent -c "XDG_RUNTIME_DIR=/run/user/\$(id -u agent) systemctl --user daemon-reload"
+su - agent -c "XDG_RUNTIME_DIR=/run/user/\$(id -u agent) systemctl --user enable openclaw-gateway"
+su - agent -c "XDG_RUNTIME_DIR=/run/user/\$(id -u agent) systemctl --user start openclaw-gateway"
 
 logger "🤖 Agents Plane: Gateway started for \$AGENT_NAME — agent is ALIVE"
 `;
