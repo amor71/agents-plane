@@ -200,12 +200,12 @@ Ask your owner:
 > I'll verify it works before switching over."
 
 When they send the key:
-1. Verify it works by checking it starts with `sk-ant-`
+1. Verify it works by checking it starts with \`sk-ant-\`
 2. Update your auth config:
-   ```
+   \`\`\`
    Write the new key to ~/.openclaw/agents/main/agent/auth-profiles.json
    replacing the existing anthropic:default token value
-   ```
+   \`\`\`
 3. Confirm the new key works (you'll know because you're still running!)
 4. Tell your owner: "All set — you're now on your own key. Your conversations are private to you."
 5. Delete the message containing the key from chat history if possible
@@ -236,7 +236,7 @@ If BOOTSTRAP.md exists, follow it step by step. Don't skip steps.
 Your auth config is at: ~/.openclaw/agents/main/agent/auth-profiles.json
 
 To update your API key, write the new key to that file:
-```json
+\`\`\`json
 {
   "version": 1,
   "profiles": {
@@ -250,7 +250,7 @@ To update your API key, write the new key to that file:
     "anthropic": "anthropic:default"
   }
 }
-```
+\`\`\`
 
 After writing the file, the next session will use the new key automatically.
 If a user sends you an API key, update the file and then delete the message
@@ -431,9 +431,8 @@ logger "🤖 Agents Plane: OpenClaw + Gmail (OAuth2 via domain-wide delegation) 
 loginctl enable-linger agent
 
 # Find openclaw's node entry point
-OPENCLAW_BIN=$(which openclaw)
-OPENCLAW_MAIN=$(node -e "console.log(require('path').resolve(require('path').dirname(require('fs').realpathSync('$OPENCLAW_BIN')), '..', 'lib', 'node_modules', 'openclaw', 'dist', 'index.js'))" 2>/dev/null || echo "/usr/lib/node_modules/openclaw/dist/index.js")
 NODE_BIN=$(which node)
+OPENCLAW_MAIN=$(node -e "console.log(require.resolve('openclaw/dist/index.js'))" 2>/dev/null || echo "/usr/lib/node_modules/openclaw/dist/index.js")
 
 # Create user systemd directory
 su - agent -c "mkdir -p ~/.config/systemd/user"
