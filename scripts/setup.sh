@@ -35,6 +35,8 @@ APIS=(
   "cloudresourcemanager.googleapis.com"
   "cloudfunctions.googleapis.com"
   "cloudbuild.googleapis.com"
+  "run.googleapis.com"
+  "artifactregistry.googleapis.com"
 )
 
 REGIONS=(
