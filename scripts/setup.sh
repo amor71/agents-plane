@@ -25,7 +25,7 @@ KEY_FILE="$CONFIG_DIR/workspace-admin-key.json"
 SA_NAME="openclaw-workspace-admin"
 SA_DISPLAY="OpenClaw Workspace Admin"
 
-SCOPES="https://www.googleapis.com/auth/admin.directory.user,https://www.googleapis.com/auth/admin.directory.user.security,https://www.googleapis.com/auth/admin.directory.userschema,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/script.projects,https://www.googleapis.com/auth/script.deployments,https://www.googleapis.com/auth/script.scriptapp,https://www.googleapis.com/auth/drive"
+SCOPES="https://www.googleapis.com/auth/admin.directory.user,https://www.googleapis.com/auth/admin.directory.user.security,https://www.googleapis.com/auth/admin.directory.userschema,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/script.projects,https://www.googleapis.com/auth/script.deployments,https://www.googleapis.com/auth/script.scriptapp,https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/gmail.send,https://www.googleapis.com/auth/gmail.readonly,https://mail.google.com/"
 
 APIS=(
   "admin.googleapis.com"
@@ -38,6 +38,7 @@ APIS=(
   "run.googleapis.com"
   "artifactregistry.googleapis.com"
   "script.googleapis.com"
+  "gmail.googleapis.com"
 )
 
 REGIONS=(
@@ -745,6 +746,18 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --role="roles/iap.tunnelResourceAccessor" &>/dev/null 2>&1 || true
 success "IAP tunnel access granted"
 
+
+
+# Store SA key in Secret Manager (for VMs to pull during provisioning)
+step "Storing service account key in Secret Manager..."
+if gcloud secrets describe agents-plane-sa-key --project="$PROJECT_ID" &>/dev/null; then
+  success "SA key secret already exists — adding new version"
+  gcloud secrets versions add agents-plane-sa-key --project="$PROJECT_ID" --data-file="$KEY_FILE" &>/dev/null
+else
+  gcloud secrets create agents-plane-sa-key --project="$PROJECT_ID" --replication-policy=automatic --data-file="$KEY_FILE" &>/dev/null
+fi
+success "SA key stored in Secret Manager (agents-plane-sa-key)"
+
 info "Network ready: VPC + Subnet + NAT + IAP SSH + deny-all ingress"
 
 
@@ -1095,7 +1108,7 @@ scopes = " ".join([
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
     "https://www.googleapis.com/auth/script.scriptapp",
-    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/gmail.send,https://www.googleapis.com/auth/gmail.readonly,https://mail.google.com/",
     "https://www.googleapis.com/auth/admin.directory.user",
     "https://www.googleapis.com/auth/admin.directory.userschema",
 ])
