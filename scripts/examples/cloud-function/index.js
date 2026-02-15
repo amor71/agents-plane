@@ -80,8 +80,7 @@ async function provisionAgent(vmName, safeName, email, model = 'gpt-4o', budget 
   try {
     const [instance] = await instancesClient.get({ project: PROJECT, zone: ZONE, instance: vmName });
     if (instance.status === 'TERMINATED') {
-      const [op] = await instancesClient.start({ project: PROJECT, zone: ZONE, instance: vmName });
-      await op.promise();
+      await instancesClient.start({ project: PROJECT, zone: ZONE, instance: vmName });
       return { status: 'started', vmName };
     }
     return { status: 'already_exists', vmName };
@@ -173,12 +172,11 @@ logger "OpenClaw agent provisioned for \$AGENT_NAME"
     ...config,
   };
 
-  const [operation] = await instancesClient.insert({
+  await instancesClient.insert({
     project: PROJECT,
     zone: ZONE,
     instanceResource,
   });
-  await operation.promise();
 
   return { status: 'created', vmName };
 }
@@ -190,8 +188,7 @@ async function deprovisionAgent(vmName, safeName) {
   try {
     const [instance] = await instancesClient.get({ project: PROJECT, zone: ZONE, instance: vmName });
     if (instance.status === 'RUNNING') {
-      const [op] = await instancesClient.stop({ project: PROJECT, zone: ZONE, instance: vmName });
-      await op.promise();
+      await instancesClient.stop({ project: PROJECT, zone: ZONE, instance: vmName });
     }
     return { status: 'stopped', vmName };
   } catch (err) {
