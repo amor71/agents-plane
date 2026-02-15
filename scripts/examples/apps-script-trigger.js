@@ -20,7 +20,7 @@ const CONFIG = {
   CLOUD_FUNCTION_URL: 'https://REGION-PROJECT_ID.cloudfunctions.net/provision-agent',
 
   // Custom schema name in Google Workspace
-  SCHEMA_NAME: 'AgentsPlane',
+  SCHEMA_NAME: 'AgentConfig',
 
   // Field name in the custom schema
   FIELD_ENABLED: 'agentEnabled',
