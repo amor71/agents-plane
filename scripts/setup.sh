@@ -196,17 +196,23 @@ fi
 save_step() { echo "$1" > "$STATE_FILE"; }
 
 # ─── Restore saved state if resuming ──────────────────────────────
-if [[ "$RESUME_STEP" -ge 2 ]] && [[ -f "$CONFIG_FILE" ]]; then
-  DOMAIN=$(jq -r '.workspace.domain // empty' "$CONFIG_FILE" 2>/dev/null || true)
+if [[ "$RESUME_STEP" -ge 2 ]]; then
   CURRENT_ACCOUNT=$(gcloud auth list --filter="status:ACTIVE" --format="value(account)" 2>/dev/null || true)
+  [[ -n "$CURRENT_ACCOUNT" ]] && DOMAIN="${CURRENT_ACCOUNT#*@}"
+  if [[ -f "$CONFIG_FILE" ]]; then
+    DOMAIN=$(jq -r '.workspace.domain // empty' "$CONFIG_FILE" 2>/dev/null || echo "$DOMAIN")
+  fi
 fi
-if [[ "$RESUME_STEP" -ge 3 ]] && [[ -f "$CONFIG_FILE" ]]; then
-  PROJECT_ID=$(jq -r '.gcp.project_id // empty' "$CONFIG_FILE" 2>/dev/null || true)
+if [[ "$RESUME_STEP" -ge 3 ]]; then
+  PROJECT_ID=$(gcloud config get-value project 2>/dev/null || true)
+  if [[ -f "$CONFIG_FILE" ]]; then
+    PROJECT_ID=$(jq -r '.gcp.project_id // empty' "$CONFIG_FILE" 2>/dev/null || echo "$PROJECT_ID")
+  fi
   if [[ -n "$PROJECT_ID" ]]; then
     gcloud config set project "$PROJECT_ID" &>/dev/null || true
   fi
 fi
-if [[ "$RESUME_STEP" -ge 5 ]] && [[ -f "$CONFIG_FILE" ]]; then
+if [[ "$RESUME_STEP" -ge 5 ]]; then
   SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   REGION=$(jq -r '.gcp.region // empty' "$CONFIG_FILE" 2>/dev/null || true)
 fi
