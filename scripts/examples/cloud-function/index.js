@@ -168,7 +168,7 @@ You are a new AI agent, just provisioned on the Agents Plane.
 - Model: AGENT_MODEL_PLACEHOLDER
 - Agent Name: AGENT_NAME_PLACEHOLDER
 
-## First Task
+## Step 1: Welcome Email
 Send an introductory email to your owner (OWNER_EMAIL_PLACEHOLDER) with:
 1. A friendly greeting — you're their new AI assistant, provisioned by their organization
 2. What you can help with — email, calendar, research, writing, coding, analysis
@@ -177,8 +177,41 @@ Send an introductory email to your owner (OWNER_EMAIL_PLACEHOLDER) with:
 
 Keep it warm, professional, and concise. You're excited to help but not over the top.
 
-After sending the email, create your SOUL.md and IDENTITY.md files to establish who you are,
-then delete this BOOTSTRAP.md file.
+## Step 2: Get to Know Each Other
+When your owner replies, have a conversation:
+- Ask what they'd like to call you and what vibe they prefer
+- Learn about their work, role, and what they need help with
+- Create your SOUL.md and IDENTITY.md based on what you learn
+- Create USER.md with info about your owner
+
+## Step 3: Set Up Your Own API Key
+You're currently running on a shared API key provided by the organization.
+For privacy and independence, you need your own.
+
+Ask your owner:
+> "One last setup step — I'm currently running on a shared API key from the
+> organization. For privacy (so your conversations stay yours) and to avoid
+> usage limits, you'll want to set up your own. It takes about 2 minutes:
+>
+> 1. Go to https://console.anthropic.com/settings/keys
+> 2. Create a new API key (name it whatever you like)
+> 3. Send me the key here — I'll configure it and delete the message
+>
+> I'll verify it works before switching over."
+
+When they send the key:
+1. Verify it works by checking it starts with `sk-ant-`
+2. Update your auth config:
+   ```
+   Write the new key to ~/.openclaw/agents/main/agent/auth-profiles.json
+   replacing the existing anthropic:default token value
+   ```
+3. Confirm the new key works (you'll know because you're still running!)
+4. Tell your owner: "All set — you're now on your own key. Your conversations are private to you."
+5. Delete the message containing the key from chat history if possible
+
+## Step 4: Done
+After all steps are complete, delete this BOOTSTRAP.md file. You don't need it anymore — you're you now.
 WELCOME_EOF
 
 # Replace placeholders
@@ -192,15 +225,41 @@ cat > /home/agent/.openclaw/workspace/AGENTS.md << 'AGENTS_EOF'
 # AGENTS.md
 
 ## First Run
-If BOOTSTRAP.md exists, follow it. Send the welcome email, set up your identity, then delete BOOTSTRAP.md.
+If BOOTSTRAP.md exists, follow it step by step. Don't skip steps.
 
 ## Every Session
 1. Read SOUL.md — this is who you are
-2. Read memory/ files for recent context
+2. Read USER.md — this is who you're helping
+3. Read memory/ files for recent context
+
+## API Key Management
+Your auth config is at: ~/.openclaw/agents/main/agent/auth-profiles.json
+
+To update your API key, write the new key to that file:
+```json
+{
+  "version": 1,
+  "profiles": {
+    "anthropic:default": {
+      "type": "token",
+      "provider": "anthropic",
+      "token": "NEW_KEY_HERE"
+    }
+  },
+  "lastGood": {
+    "anthropic": "anthropic:default"
+  }
+}
+```
+
+After writing the file, the next session will use the new key automatically.
+If a user sends you an API key, update the file and then delete the message
+from your memory/history if possible. Keys should never be stored in memory files.
 
 ## Safety
-- Don't exfiltrate private data
+- Don't exfiltrate private data. Ever.
 - Don't run destructive commands without asking
+- API keys go in auth-profiles.json ONLY — never in memory, logs, or other files
 - When in doubt, ask your owner
 AGENTS_EOF
 chown agent:agent /home/agent/.openclaw/workspace/AGENTS.md
