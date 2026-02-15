@@ -1053,6 +1053,7 @@ except urllib.error.HTTPError as e:
 # Build manifest with Admin SDK advanced service enabled
 manifest = {
     "timeZone": "America/New_York",
+    "runtimeVersion": "V8",
     "dependencies": {
         "enabledAdvancedServices": [
             {
