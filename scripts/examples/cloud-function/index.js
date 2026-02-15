@@ -134,7 +134,7 @@ curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y -qq nodejs
 
 # --- 3. Install OpenClaw ---
-npm install -g @openclaw/cli
+npm install -g openclaw
 logger "🤖 Agents Plane: OpenClaw CLI installed"
 
 # --- 4. Create agent user ---
