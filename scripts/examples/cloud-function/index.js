@@ -144,9 +144,11 @@ logger "OpenClaw agent provisioned for \$AGENT_NAME"
         // No external IP
       },
     ],
+    // Per-agent service accounts can be created later for isolation
+    // For now, VMs use the default compute service account
     serviceAccounts: [
       {
-        email: `agent-${safeName}@${PROJECT}.iam.gserviceaccount.com`,
+        email: 'default',
         scopes: ['https://www.googleapis.com/auth/cloud-platform'],
       },
     ],
