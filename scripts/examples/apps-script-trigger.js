@@ -44,24 +44,24 @@ const CONFIG = {
 function createCustomSchema() {
   const schema = {
     schemaName: CONFIG.SCHEMA_NAME,
-    displayName: 'Agents Plane',
+    displayName: 'Agent Configuration',
     fields: [
       {
         fieldName: CONFIG.FIELD_ENABLED,
         fieldType: 'BOOL',
-        displayName: 'AI Agent Enabled',
+        displayName: 'Agent Enabled',
         readAccessType: 'ADMINS_AND_SELF',
       },
       {
         fieldName: CONFIG.FIELD_MODEL,
         fieldType: 'STRING',
-        displayName: 'AI Model',
+        displayName: 'Agent Model (e.g. claude-opus-4-6, gpt-4o, gemini-pro)',
         readAccessType: 'ADMINS_AND_SELF',
       },
       {
         fieldName: CONFIG.FIELD_BUDGET,
         fieldType: 'INT64',
-        displayName: 'Monthly Budget (USD)',
+        displayName: 'Monthly Budget in USD (e.g. 50, 100, 200)',
         readAccessType: 'ADMINS_AND_SELF',
       },
     ],
