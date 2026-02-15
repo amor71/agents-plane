@@ -215,6 +215,15 @@ fi
 if [[ "$RESUME_STEP" -ge 5 ]]; then
   SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   REGION=$(jq -r '.gcp.region // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  # Restore CLIENT_ID from key file
+  if [[ -f "$KEY_FILE" ]]; then
+    CLIENT_ID=$(jq -r '.client_id // empty' "$KEY_FILE" 2>/dev/null || true)
+  fi
+  if [[ -z "$CLIENT_ID" ]]; then
+    CLIENT_ID=$(gcloud iam service-accounts describe "$SA_EMAIL" \
+      --project="$PROJECT_ID" \
+      --format="value(uniqueId)" 2>/dev/null || true)
+  fi
 fi
 
 # ═══════════════════════════════════════════════════════════════════
