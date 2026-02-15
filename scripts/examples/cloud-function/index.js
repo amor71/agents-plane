@@ -112,21 +112,97 @@ async function provisionAgent(vmName, safeName, email, model = 'claude-opus-4-6'
   // Startup script
   const startupScript = `#!/bin/bash
 set -e
+export DEBIAN_FRONTEND=noninteractive
+
+logger "🤖 Agents Plane: Starting provisioning..."
+
+# --- 1. System setup ---
 apt-get update -qq && apt-get upgrade -y -qq
 apt-get install -y -qq curl wget git jq unzip
+
+# --- 2. Install Node.js 22 ---
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y -qq nodejs
+
+# --- 3. Install OpenClaw ---
 npm install -g @openclaw/cli
+logger "🤖 Agents Plane: OpenClaw CLI installed"
+
+# --- 4. Create agent user ---
 useradd -m -s /bin/bash agent || true
-su - agent -c 'mkdir -p ~/.openclaw/workspace'
+
+# --- 5. Pull agent config from Secret Manager ---
 INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/name)
 AGENT_NAME="\${INSTANCE_NAME#agent-}"
 PROJECT_ID=$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/project/project-id)
 TOKEN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | jq -r '.access_token')
 CONFIG=$(curl -s "https://secretmanager.googleapis.com/v1/projects/\${PROJECT_ID}/secrets/agent-\${AGENT_NAME}-config/versions/latest:access" -H "Authorization: Bearer \${TOKEN}" | jq -r '.payload.data' | base64 -d)
+
+OWNER_EMAIL=$(echo "\$CONFIG" | jq -r '.user')
+AGENT_MODEL=$(echo "\$CONFIG" | jq -r '.model // "claude-opus-4-6"')
+AGENT_BUDGET=$(echo "\$CONFIG" | jq -r '.budget // 50')
+
+# --- 6. Set up agent workspace ---
+su - agent -c "mkdir -p ~/.openclaw/workspace"
+
 echo "\$CONFIG" > /home/agent/.openclaw/agent-config.json
 chown agent:agent /home/agent/.openclaw/agent-config.json
-logger "OpenClaw agent provisioned for \$AGENT_NAME"
+
+# --- 7. Write BOOTSTRAP.md (welcome prompt) ---
+cat > /home/agent/.openclaw/workspace/BOOTSTRAP.md << 'WELCOME_EOF'
+# Welcome
+
+You are a new AI agent, just provisioned on the Agents Plane.
+
+## Your Identity
+- Owner: OWNER_EMAIL_PLACEHOLDER
+- Model: AGENT_MODEL_PLACEHOLDER
+- Agent Name: AGENT_NAME_PLACEHOLDER
+
+## First Task
+Send an introductory email to your owner (OWNER_EMAIL_PLACEHOLDER) with:
+1. A friendly greeting — you're their new AI assistant, provisioned by their organization
+2. What you can help with — email, calendar, research, writing, coding, analysis
+3. How to connect additional channels (WhatsApp, Slack, Telegram) for easier access
+4. An invitation to reply to this email and start chatting
+
+Keep it warm, professional, and concise. You're excited to help but not over the top.
+
+After sending the email, create your SOUL.md and IDENTITY.md files to establish who you are,
+then delete this BOOTSTRAP.md file.
+WELCOME_EOF
+
+# Replace placeholders
+sed -i "s/OWNER_EMAIL_PLACEHOLDER/\$OWNER_EMAIL/g" /home/agent/.openclaw/workspace/BOOTSTRAP.md
+sed -i "s/AGENT_MODEL_PLACEHOLDER/\$AGENT_MODEL/g" /home/agent/.openclaw/workspace/BOOTSTRAP.md
+sed -i "s/AGENT_NAME_PLACEHOLDER/\$AGENT_NAME/g" /home/agent/.openclaw/workspace/BOOTSTRAP.md
+chown agent:agent /home/agent/.openclaw/workspace/BOOTSTRAP.md
+
+# --- 8. Write AGENTS.md ---
+cat > /home/agent/.openclaw/workspace/AGENTS.md << 'AGENTS_EOF'
+# AGENTS.md
+
+## First Run
+If BOOTSTRAP.md exists, follow it. Send the welcome email, set up your identity, then delete BOOTSTRAP.md.
+
+## Every Session
+1. Read SOUL.md — this is who you are
+2. Read memory/ files for recent context
+
+## Safety
+- Don't exfiltrate private data
+- Don't run destructive commands without asking
+- When in doubt, ask your owner
+AGENTS_EOF
+chown agent:agent /home/agent/.openclaw/workspace/AGENTS.md
+
+logger "🤖 Agents Plane: Agent \$AGENT_NAME provisioned for \$OWNER_EMAIL (model: \$AGENT_MODEL)"
+
+# --- 9. Start OpenClaw gateway ---
+# The agent needs email configured to send the welcome email.
+# For now, log completion. Full gateway auto-start requires API keys
+# which should be provisioned per-org via the Agents Plane config.
+logger "🤖 Agents Plane: Ready. Run 'openclaw gateway start' as agent user to begin."
 `;
 
   // Create VM
