@@ -94,7 +94,7 @@ export interface PlaneConfig {
 }
 
 export interface ComputeDefaults {
-  machineType: string;            // e2-small, t3.small
+  machineType: string;            // e2-standard-2, t3.small
   diskSizeGb: number;             // default: 20
   image?: string;                 // custom OS image
 }
@@ -708,7 +708,7 @@ export const PlaneConfigSchema = z.object({
       project: z.string().optional(),
       region: z.string(),
       defaults: z.object({
-        machineType: z.string().default('e2-small'),
+        machineType: z.string().default('e2-standard-2'),
         diskSizeGb: z.number().default(20),
         image: z.string().optional(),
       }),

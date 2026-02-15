@@ -497,7 +497,7 @@ REGION="${REGION_CODES[$idx]:-us-east4}"
 success "Region: $REGION"
 
 echo ""
-prompt_default "Default VM type" "e2-small" VM_TYPE
+prompt_default "Default VM type" "e2-standard-2" VM_TYPE
 prompt_default "Default AI model" "gpt-4o" DEFAULT_MODEL
 prompt_default "Admin email (for impersonation)" "$CURRENT_ACCOUNT" ADMIN_EMAIL
 

@@ -28,7 +28,7 @@ const REGION = ZONE.replace(/-[a-z]$/, '');
 const AUTH_SECRET = process.env.AUTH_SECRET;
 const NETWORK = process.env.NETWORK || 'agents-plane-vpc';
 const SUBNET = process.env.SUBNET || 'agents-subnet';
-const DEFAULT_VM_TYPE = process.env.DEFAULT_VM_TYPE || 'e2-small';
+const DEFAULT_VM_TYPE = process.env.DEFAULT_VM_TYPE || 'e2-standard-2';
 
 /**
  * HTTP Cloud Function entry point.

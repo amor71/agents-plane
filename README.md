@@ -147,7 +147,7 @@ Shows all provisioned agents, their VM status, models, budgets, and infrastructu
 │  │                                               │           │
 │  │  ┌────────────┐  ┌────────────┐              │           │
 │  │  │ agent-alice│  │ agent-bob  │              │           │
-│  │  │ e2-small   │  │ e2-small   │              │           │
+│  │  │ e2-standard-2   │  │ e2-standard-2   │              │           │
 │  │  │ OpenClaw   │  │ OpenClaw   │              │           │
 │  │  └──────┬─────┘  └──────┬─────┘              │           │
 │  │         │               │                     │           │
@@ -269,7 +269,7 @@ cat > ~/.openclaw/agents-plane/config.json << 'EOF'
     "project_id": "YOUR_PROJECT",
     "region": "us-east4",
     "zone": "us-east4-b",
-    "default_vm_type": "e2-small",
+    "default_vm_type": "e2-standard-2",
     "service_account": "openclaw-workspace-admin@YOUR_PROJECT.iam.gserviceaccount.com",
     "key_file": "~/.openclaw/agents-plane/workspace-admin-key.json"
   },
@@ -344,7 +344,7 @@ gcloud compute ssh VM_NAME --zone=ZONE --tunnel-through-iap
 ## FAQ
 
 **Q: How much does each agent cost?**
-A: The default `e2-small` VM costs ~$12/month. Add model API costs based on usage. The `--budget` flag sets a soft cap.
+A: The default `e2-standard-2` VM costs ~$50/month. Add model API costs based on usage. The `--budget` flag sets a soft cap.
 
 **Q: Can I use this with Google Workspace for Education?**
 A: Yes, as long as you have admin access and a linked GCP billing account.
