@@ -5,7 +5,18 @@
  * Workspace Admin Console. When an admin enables the "AI Agent" toggle
  * for a user, it triggers a Cloud Function to provision the agent.
  *
- * Setup:
+ * How admins enable an agent for a user:
+ *   1. Go to admin.google.com → Directory → Users
+ *   2. Click on the user
+ *   3. Click "User information" at the top of the user page
+ *   4. Scroll down past the default fields (department, building, etc.)
+ *   5. Under "Custom attributes", find "Agent Configuration"
+ *   6. Set "Agent Enabled" to Yes
+ *   7. Set "Agent Model" — e.g. claude-opus-4-6, gpt-4o, gemini-pro
+ *   8. Set "Monthly Budget" — a number in USD (no dollar sign), e.g. 50
+ *   9. Click Save
+ *
+ * Setup (this script):
  *   1. Go to script.google.com and create a new project
  *   2. Paste this code
  *   3. Set up a time-based trigger (every 5 minutes) for `pollForAgentChanges`

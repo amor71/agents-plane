@@ -202,7 +202,23 @@ gcloud functions deploy provision-agent \
 
 #### 3. Use It
 
-In Google Admin Console → Users → select a user → User Information → scroll to "Agents Plane" section → toggle "AI Agent Enabled" → Save.
+#### Where to Find Agent Configuration in Google Admin
+
+1. Go to [admin.google.com](https://admin.google.com)
+2. Left sidebar → **Directory → Users**
+3. Click on the user
+4. Click **User information** at the top of the user page
+5. Scroll **all the way down** past the default fields (department, building, floor, etc.)
+6. Under **Custom attributes**, find **Agent Configuration**
+7. Fill in the fields:
+
+| Field | What to enter | Example |
+|---|---|---|
+| **Agent Enabled** | `Yes` / `No` radio button | `Yes` |
+| **Agent Model** | AI model identifier | `claude-opus-4-6`, `gpt-4o`, `gemini-pro` |
+| **Monthly Budget** | Number in USD (no $ sign) | `50`, `100`, `200` |
+
+8. Click **Save**
 
 Within 5 minutes, the agent VM will be provisioned automatically.
 

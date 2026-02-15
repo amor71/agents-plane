@@ -200,20 +200,24 @@ gcloud functions deploy provision-agent \
 7. Run `createCustomSchema()` once to add the custom user fields
 8. Set up a time-based trigger for `pollForAgentChanges` (every 5 minutes)
 
-#### 3. Use It
+#### 3. Enable an Agent for a User
 
-In Google Admin Console:
-1. Go to **Directory → Users**
-2. Click on the user you want to enable
-3. Click **User information** (top of the user page)
-4. Scroll down past the default fields (department, building, etc.) to **Agent Configuration** under *Custom attributes*
-5. Fill in:
-   - **Agent Enabled** → `Yes`
-   - **Agent Model** → the model name, e.g. `claude-opus-4-6`, `gpt-4o`, or `gemini-pro`
-   - **Monthly Budget** → a number in USD, e.g. `50`, `100`, `200` (no dollar sign)
-6. Click **Save**
+1. Go to [admin.google.com](https://admin.google.com)
+2. In the left sidebar, go to **Directory → Users**
+3. Click on the user you want to enable
+4. Click **User information** at the top of the user page
+5. Scroll **all the way down** past the default fields (department, building, floor, etc.)
+6. Under **Custom attributes**, you'll see **Agent Configuration** with three fields:
 
-Within 5 minutes, the agent VM will be provisioned automatically.
+| Field | What to enter | Example |
+|---|---|---|
+| **Agent Enabled** | `Yes` / `No` radio button | `Yes` |
+| **Agent Model** | AI model identifier | `claude-opus-4-6`, `gpt-4o`, `gemini-pro` |
+| **Monthly Budget** | Number in USD (no $ sign) | `50`, `100`, `200` |
+
+7. Click **Save**
+
+Within 5 minutes, the Apps Script trigger will detect the change and the Cloud Function will provision (or deprovision) the agent VM automatically.
 
 ---
 
