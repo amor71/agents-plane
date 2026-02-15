@@ -182,22 +182,41 @@ header "🔐 Step 2 · Google Cloud Authentication"
 
 CURRENT_ACCOUNT=$(gcloud auth list --filter="status:ACTIVE" --format="value(account)" 2>/dev/null || true)
 
+# Check if current token is actually valid (not just cached)
+TOKEN_VALID=false
 if [[ -n "$CURRENT_ACCOUNT" ]]; then
-  info "Currently signed in as: ${BOLD}$CURRENT_ACCOUNT${NC}"
-  read -rp "  Use this account? (Y/n): " use_current
-  if [[ "$use_current" =~ ^[Nn] ]]; then
-    CURRENT_ACCOUNT=""
+  if gcloud auth print-access-token &>/dev/null; then
+    TOKEN_VALID=true
   fi
 fi
 
-if [[ -z "$CURRENT_ACCOUNT" ]]; then
+if [[ "$TOKEN_VALID" == "true" ]]; then
+  info "Currently signed in as: ${BOLD}$CURRENT_ACCOUNT${NC}"
+  read -rp "  Use this account? (Y/n): " use_current
+  if [[ "$use_current" =~ ^[Nn] ]]; then
+    TOKEN_VALID=false
+    CURRENT_ACCOUNT=""
+  fi
+else
+  if [[ -n "$CURRENT_ACCOUNT" ]]; then
+    warn "Session expired for ${BOLD}$CURRENT_ACCOUNT${NC}. Re-authenticating..."
+  fi
+  CURRENT_ACCOUNT=""
+fi
+
+if [[ "$TOKEN_VALID" == "false" ]]; then
   step "Opening browser for Google sign-in..."
-  gcloud auth login --brief 2>/dev/null || die "Authentication failed"
+  gcloud auth login --force 2>/dev/null || die "Authentication failed"
   CURRENT_ACCOUNT=$(gcloud auth list --filter="status:ACTIVE" --format="value(account)" 2>/dev/null)
 fi
 
 if [[ -z "$CURRENT_ACCOUNT" ]]; then
   die "No authenticated account found"
+fi
+
+# Verify token works for real
+if ! gcloud auth print-access-token &>/dev/null; then
+  die "Authentication succeeded but token is invalid. Try: gcloud auth login --force"
 fi
 
 success "Authenticated as ${BOLD}$CURRENT_ACCOUNT${NC}"
