@@ -207,11 +207,109 @@ chown agent:agent /home/agent/.openclaw/workspace/AGENTS.md
 
 logger "🤖 Agents Plane: Agent \$AGENT_NAME provisioned for \$OWNER_EMAIL (model: \$AGENT_MODEL)"
 
-# --- 9. Start OpenClaw gateway ---
-# The agent needs email configured to send the welcome email.
-# For now, log completion. Full gateway auto-start requires API keys
-# which should be provisioned per-org via the Agents Plane config.
-logger "🤖 Agents Plane: Ready. Run 'openclaw gateway start' as agent user to begin."
+# --- 9. Pull shared API key from Secret Manager ---
+ANTHROPIC_KEY=$(curl -s "https://secretmanager.googleapis.com/v1/projects/\${PROJECT_ID}/secrets/agents-shared-anthropic-key/versions/latest:access" -H "Authorization: Bearer \${TOKEN}" | jq -r '.payload.data' | base64 -d)
+EMAIL_PASS=$(curl -s "https://secretmanager.googleapis.com/v1/projects/\${PROJECT_ID}/secrets/openclaw-main-nine30-email-password/versions/latest:access" -H "Authorization: Bearer \${TOKEN}" | jq -r '.payload.data' | base64 -d)
+DOMAIN=$(echo "\$OWNER_EMAIL" | cut -d@ -f2)
+
+logger "🤖 Agents Plane: API key and email credentials retrieved"
+
+# --- 10. Configure OpenClaw gateway ---
+su - agent -c "mkdir -p ~/.openclaw/agents/main/agent"
+
+# Write auth profile with Anthropic key
+cat > /home/agent/.openclaw/agents/main/agent/auth-profiles.json << AUTHEOF
+{
+  "version": 1,
+  "profiles": {
+    "anthropic:default": {
+      "type": "token",
+      "provider": "anthropic",
+      "token": "\$ANTHROPIC_KEY"
+    }
+  },
+  "lastGood": {
+    "anthropic": "anthropic:default"
+  }
+}
+AUTHEOF
+chown -R agent:agent /home/agent/.openclaw/agents/
+
+# Write gateway config
+cat > /home/agent/.openclaw/openclaw.json << CFGEOF
+{
+  "ai": {
+    "model": "anthropic/\$AGENT_MODEL"
+  },
+  "system": {
+    "name": "\$AGENT_NAME",
+    "workspace": "/home/agent/.openclaw/workspace"
+  }
+}
+CFGEOF
+chown agent:agent /home/agent/.openclaw/openclaw.json
+
+# --- 11. Configure email (himalaya) ---
+su - agent -c "mkdir -p ~/.config/himalaya"
+
+cat > /home/agent/.config/himalaya/config.toml << EMAILEOF
+[accounts.\$DOMAIN]
+default = true
+display-name = "Agent \$AGENT_NAME"
+email = "\$OWNER_EMAIL"
+folder.alias.inbox = "INBOX"
+folder.alias.sent = "[Gmail]/Sent Mail"
+folder.alias.drafts = "[Gmail]/Drafts"
+folder.alias.trash = "[Gmail]/Trash"
+
+backend.type = "imap"
+backend.host = "imap.gmail.com"
+backend.port = 993
+backend.encryption = "tls"
+backend.login = "\$OWNER_EMAIL"
+backend.auth.type = "password"
+backend.auth.raw = "\$EMAIL_PASS"
+
+message.send.backend.type = "smtp"
+message.send.backend.host = "smtp.gmail.com"
+message.send.backend.port = 465
+message.send.backend.encryption = "tls"
+message.send.backend.login = "\$OWNER_EMAIL"
+message.send.backend.auth.type = "password"
+message.send.backend.auth.raw = "\$EMAIL_PASS"
+
+message.send.save-copy = false
+EMAILEOF
+chown -R agent:agent /home/agent/.config/himalaya/
+
+logger "🤖 Agents Plane: OpenClaw + email configured"
+
+# --- 12. Start OpenClaw gateway ---
+# Run as agent user, in background, with systemd service
+cat > /etc/systemd/system/openclaw-agent.service << SVCEOF
+[Unit]
+Description=OpenClaw Agent (\$AGENT_NAME)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent
+WorkingDirectory=/home/agent/.openclaw/workspace
+ExecStart=/usr/bin/openclaw gateway start
+Restart=always
+RestartSec=10
+Environment=HOME=/home/agent
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+systemctl daemon-reload
+systemctl enable openclaw-agent
+systemctl start openclaw-agent
+
+logger "🤖 Agents Plane: Gateway started for \$AGENT_NAME — agent is ALIVE"
 `;
 
   // Create VM
