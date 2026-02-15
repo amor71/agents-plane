@@ -204,7 +204,26 @@ info "Domain: ${BOLD}$DOMAIN${NC}"
 header "📂 Step 3 · GCP Project"
 
 step "Fetching your projects..."
+# Try multiple methods to list projects — some accounts need different approaches
 PROJECTS=$(gcloud projects list --format="value(projectId,name)" 2>/dev/null || true)
+
+# If that returned nothing, try with the active account explicitly
+if [[ -z "$PROJECTS" ]]; then
+  ACTIVE_ACCOUNT=$(gcloud config get account 2>/dev/null || true)
+  if [[ -n "$ACTIVE_ACCOUNT" ]]; then
+    PROJECTS=$(gcloud projects list --format="value(projectId,name)" --account="$ACTIVE_ACCOUNT" 2>/dev/null || true)
+  fi
+fi
+
+# If still nothing, try to get the current project at least
+if [[ -z "$PROJECTS" ]]; then
+  CURRENT_PROJECT=$(gcloud config get project 2>/dev/null || true)
+  if [[ -n "$CURRENT_PROJECT" ]]; then
+    PNAME=$(gcloud projects describe "$CURRENT_PROJECT" --format="value(name)" 2>/dev/null || echo "$CURRENT_PROJECT")
+    PROJECTS="${CURRENT_PROJECT}	${PNAME}"
+    warn "Could not list all projects (permission issue). Found current project."
+  fi
+fi
 
 if [[ -n "$PROJECTS" ]]; then
   echo ""
