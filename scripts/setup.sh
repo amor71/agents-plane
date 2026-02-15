@@ -952,16 +952,24 @@ fi
 # Generate shared secret for Cloud Function ↔ Apps Script auth
 AUTH_SECRET=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)
 
+# Write trigger code to a temp file so Python can read it without shell mangling
+TRIGGER_TMP=$(mktemp)
+echo "$TRIGGER_CODE" > "$TRIGGER_TMP"
+trap "rm -f '$TRIGGER_TMP'" EXIT
+
 step "Creating Apps Script project via API..."
 
-APPS_SCRIPT_RESULT=$(python3 - "$KEY_FILE" "$ADMIN_EMAIL" "$TRIGGER_CODE" "$AUTH_SECRET" "${CF_URL:-}" <<'PYEOF'
+APPS_SCRIPT_RESULT=$(python3 - "$KEY_FILE" "$ADMIN_EMAIL" "$TRIGGER_TMP" "$AUTH_SECRET" "${CF_URL:-}" <<'PYEOF'
 import json, sys, time, urllib.request, urllib.error, urllib.parse, base64
 
 key_file = sys.argv[1]
 admin_email = sys.argv[2]
-trigger_code = sys.argv[3]
+trigger_code_file = sys.argv[3]
 auth_secret = sys.argv[4]
 cf_url = sys.argv[5] if len(sys.argv) > 5 else ""
+
+with open(trigger_code_file) as f:
+    trigger_code = f.read()
 
 with open(key_file) as f:
     creds = json.load(f)
