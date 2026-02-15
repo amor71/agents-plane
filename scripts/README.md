@@ -19,7 +19,8 @@
 
 ```bash
 # Clone and run
-git clone <repo-url> && cd agents-plane/scripts
+git clone https://github.com/amor71/agents-plane.git
+cd agents-plane/scripts
 ./setup.sh
 
 # Or one-liner (when hosted)
