@@ -936,30 +936,17 @@ echo ""
 APPS_SCRIPT_OK=false
 TRIGGER_SOURCE="${SCRIPT_DIR}/examples/apps-script-trigger.js"
 
-if [[ -f "$TRIGGER_SOURCE" ]]; then
-  TRIGGER_CODE=$(cat "$TRIGGER_SOURCE")
-else
+if [[ ! -f "$TRIGGER_SOURCE" ]]; then
   fail "Apps Script source not found at $TRIGGER_SOURCE"
-  TRIGGER_CODE=""
-fi
-
-# Replace placeholder with actual Cloud Function URL if we have it
-if [[ "${CF_URL:-}" != "unknown" && -n "${CF_URL:-}" ]]; then
-  TRIGGER_CODE="${TRIGGER_CODE//CLOUD_FUNCTION_URL_HERE/$CF_URL}"
-  TRIGGER_CODE="${TRIGGER_CODE//https:\/\/REGION-PROJECT_ID.cloudfunctions.net\/provision-agent/$CF_URL}"
 fi
 
 # Generate shared secret for Cloud Function ↔ Apps Script auth
 AUTH_SECRET=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)
 
-# Write trigger code to a temp file so Python can read it without shell mangling
-TRIGGER_TMP=$(mktemp)
-echo "$TRIGGER_CODE" > "$TRIGGER_TMP"
-trap "rm -f '$TRIGGER_TMP'" EXIT
-
 step "Creating Apps Script project via API..."
 
-APPS_SCRIPT_RESULT=$(python3 - "$KEY_FILE" "$ADMIN_EMAIL" "$TRIGGER_TMP" "$AUTH_SECRET" "${CF_URL:-}" <<'PYEOF'
+# Python reads the JS file directly to avoid any shell mangling
+APPS_SCRIPT_RESULT=$(python3 - "$KEY_FILE" "$ADMIN_EMAIL" "$TRIGGER_SOURCE" "$AUTH_SECRET" "${CF_URL:-}" <<'PYEOF'
 import json, sys, time, urllib.request, urllib.error, urllib.parse, base64
 
 key_file = sys.argv[1]
@@ -970,6 +957,12 @@ cf_url = sys.argv[5] if len(sys.argv) > 5 else ""
 
 with open(trigger_code_file) as f:
     trigger_code = f.read()
+
+# Replace Cloud Function URL placeholder if we have the real URL
+if cf_url and cf_url != "unknown":
+    trigger_code = trigger_code.replace(
+        "https://REGION-PROJECT_ID.cloudfunctions.net/provision-agent", cf_url
+    )
 
 with open(key_file) as f:
     creds = json.load(f)
@@ -1230,8 +1223,8 @@ else
   echo -e "  4. Set trigger: Triggers → Add → ${BOLD}pollForAgentChanges${NC} → Time-driven → 5 min"
   echo -e "  5. Deploy → New deployment → Web app → Execute as Me"
   echo ""
-  if command -v pbcopy &>/dev/null && [[ -n "$TRIGGER_CODE" ]]; then
-    echo "$TRIGGER_CODE" | pbcopy
+  if command -v pbcopy &>/dev/null && [[ -f "$TRIGGER_SOURCE" ]]; then
+    cat "$TRIGGER_SOURCE" | pbcopy
     success "Trigger code copied to clipboard 📋"
   fi
   if command -v open &>/dev/null; then
