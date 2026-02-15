@@ -890,7 +890,7 @@ else
     --gen2 \
     --runtime=nodejs20 \
     --trigger-http \
-    --no-allow-unauthenticated \
+    --allow-unauthenticated \
     --source="$CF_SOURCE" \
     --entry-point=provisionAgent \
     --region="$REGION" \
