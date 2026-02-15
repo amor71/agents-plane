@@ -389,7 +389,13 @@ chmod +x /home/agent/.config/agents-plane/get-gmail-token.py
 chown agent:agent /home/agent/.config/agents-plane/get-gmail-token.py
 
 # Install cryptography for JWT signing
-pip3 install cryptography -q 2>/dev/null || apt-get install -y -qq python3-cryptography
+apt-get install -y -qq python3-cryptography
+
+# Install himalaya (email CLI)
+HIMALAYA_VERSION="v1.1.0"
+curl -sL "https://github.com/pimalaya/himalaya/releases/download/\${HIMALAYA_VERSION}/himalaya.x86_64-linux.tgz" | tar xz -C /usr/local/bin/
+chmod +x /usr/local/bin/himalaya
+logger "🤖 Agents Plane: himalaya \${HIMALAYA_VERSION} installed"
 
 DOMAIN=$(echo "\$OWNER_EMAIL" | cut -d@ -f2)
 ACCT_NAME=$(echo "\$DOMAIN" | cut -d. -f1)
