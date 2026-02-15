@@ -874,7 +874,7 @@ header "☁️  Step 11 · Deploy Cloud Function"
 
 CF_OK=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CF_SOURCE="${SCRIPT_DIR}/../examples/cloud-function"
+CF_SOURCE="${SCRIPT_DIR}/examples/cloud-function"
 
 if [[ ! -d "$CF_SOURCE" ]]; then
   warn "Cloud Function source not found at $CF_SOURCE"
