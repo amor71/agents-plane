@@ -225,6 +225,13 @@ if [[ "$RESUME_STEP" -ge 5 ]]; then
       --format="value(uniqueId)" 2>/dev/null || true)
   fi
 fi
+if [[ "$RESUME_STEP" -ge 7 ]] && [[ -f "$CONFIG_FILE" ]]; then
+  PLANE_NAME=$(jq -r '.plane.name // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  REGION=$(jq -r '.gcp.region // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  VM_TYPE=$(jq -r '.gcp.default_vm_type // "e2-standard-2"' "$CONFIG_FILE" 2>/dev/null || true)
+  DEFAULT_MODEL=$(jq -r '.agents.default_model // "claude-opus-4-6"' "$CONFIG_FILE" 2>/dev/null || true)
+  ADMIN_EMAIL=$(jq -r '.workspace.admin_email // empty' "$CONFIG_FILE" 2>/dev/null || true)
+fi
 
 # ═══════════════════════════════════════════════════════════════════
 # STEP 2: Authentication
@@ -498,6 +505,9 @@ fi  # end Step 5 skip
 # STEP 6: Workspace Domain-Wide Delegation
 # ═══════════════════════════════════════════════════════════════════
 
+if [[ "$RESUME_STEP" -ge 6 ]]; then
+  success "Step 6 · Workspace Delegation — already done"
+else
 header "🏢 Step 6 · Google Workspace Delegation"
 
 echo ""
@@ -537,11 +547,16 @@ fi
 echo ""
 read -rp "  Press Enter once you've completed the delegation... " _
 success "Workspace delegation configured"
+save_step 6
+fi  # end Step 6 skip
 
 # ═══════════════════════════════════════════════════════════════════
 # STEP 7: Plane Configuration
 # ═══════════════════════════════════════════════════════════════════
 
+if [[ "$RESUME_STEP" -ge 7 ]]; then
+  success "Step 7 · Configuration — already done (${BOLD}${PLANE_NAME}${NC})"
+else
 header "⚙️  Step 7 · Configure Your Agents Plane"
 
 # Derive default plane name from domain
@@ -574,13 +589,18 @@ success "Region: $REGION"
 
 echo ""
 prompt_default "Default VM type" "e2-standard-2" VM_TYPE
-prompt_default "Default AI model" "gpt-4o" DEFAULT_MODEL
+prompt_default "Default AI model" "claude-opus-4-6" DEFAULT_MODEL
 prompt_default "Admin email (for impersonation)" "$CURRENT_ACCOUNT" ADMIN_EMAIL
+save_step 7
+fi  # end Step 7 skip
 
 # ═══════════════════════════════════════════════════════════════════
 # STEP 8: Write Config
 # ═══════════════════════════════════════════════════════════════════
 
+if [[ "$RESUME_STEP" -ge 8 ]]; then
+  success "Step 8 · Config — already saved"
+else
 header "💾 Step 8 · Saving Configuration"
 
 cat > "$CONFIG_FILE" << EOF
@@ -614,11 +634,16 @@ EOF
 
 chmod 600 "$CONFIG_FILE"
 success "Config saved to $CONFIG_FILE"
+save_step 8
+fi  # end Step 8 skip
 
 # ═══════════════════════════════════════════════════════════════════
 # STEP 9: Verification
 # ═══════════════════════════════════════════════════════════════════
 
+if [[ "$RESUME_STEP" -ge 9 ]]; then
+  success "Step 9 · Verification — already passed"
+else
 header "🧪 Step 9 · Verification"
 
 VERIFY_PASS=0
@@ -686,6 +711,8 @@ if [[ $VERIFY_PASS -eq $VERIFY_TOTAL ]]; then
 else
   warn "$VERIFY_PASS/$VERIFY_TOTAL checks passed"
 fi
+save_step 9
+fi  # end Step 9 skip
 
 # ═══════════════════════════════════════════════════════════════════
 # STEP 10: Create Custom User Schema
