@@ -273,7 +273,7 @@ done
 2. Go to https://admin.google.com/ac/owl/domainwidedelegation
 3. Add new → paste Client ID → paste scopes:
    ```
-   https://www.googleapis.com/auth/admin.directory.user,https://www.googleapis.com/auth/admin.directory.user.security,https://www.googleapis.com/auth/admin.directory.userschema,https://www.googleapis.com/auth/cloud-platform
+   https://www.googleapis.com/auth/admin.directory.user,https://www.googleapis.com/auth/admin.directory.user.security,https://www.googleapis.com/auth/admin.directory.userschema,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/script.projects,https://www.googleapis.com/auth/script.deployments,https://www.googleapis.com/auth/drive
    ```
 
 ### 6. Create Config
@@ -354,6 +354,9 @@ gcloud compute ssh VM_NAME --zone=ZONE --tunnel-through-iap
 | `admin.directory.user.security` | Manage user security settings |
 | `admin.directory.userschema` | Read/write custom schema fields |
 | `cloud-platform` | Manage GCP resources (VMs, secrets, etc.) |
+| `script.projects` | Create and manage Apps Script projects |
+| `script.deployments` | Deploy Apps Script triggers |
+| `drive` | Required by Apps Script API for project creation |
 
 ---
 
