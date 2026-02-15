@@ -641,6 +641,114 @@ save_step 8
 fi  # end Step 8 skip
 
 # ═══════════════════════════════════════════════════════════════════
+# STEP 8.5: Network Infrastructure (VPC, Subnet, NAT, Firewall)
+# ═══════════════════════════════════════════════════════════════════
+
+header "🌐 Step 8.5 · Network Infrastructure"
+
+# Read values from config
+NETWORK=$(jq -r '.agents.network // "agents-plane-vpc"' "$CONFIG_FILE")
+SUBNET=$(jq -r '.agents.subnet // "agents-subnet"' "$CONFIG_FILE")
+FW_TAG=$(jq -r '.agents.firewall_tag // "agent-vm"' "$CONFIG_FILE")
+
+# VPC
+step "Creating VPC network ($NETWORK)..."
+if gcloud compute networks describe "$NETWORK" --project="$PROJECT_ID" &>/dev/null; then
+  success "VPC $NETWORK already exists"
+else
+  gcloud compute networks create "$NETWORK" \
+    --subnet-mode=custom \
+    --bgp-routing-mode=regional \
+    --project="$PROJECT_ID" &>/dev/null
+  success "VPC $NETWORK created"
+fi
+
+# Subnet
+step "Creating subnet ($SUBNET in $REGION)..."
+if gcloud compute networks subnets describe "$SUBNET" --region="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+  success "Subnet $SUBNET already exists"
+else
+  gcloud compute networks subnets create "$SUBNET" \
+    --network="$NETWORK" \
+    --region="$REGION" \
+    --range=10.0.0.0/24 \
+    --project="$PROJECT_ID" &>/dev/null
+  success "Subnet $SUBNET created (10.0.0.0/24)"
+fi
+
+# Cloud Router (needed for NAT)
+step "Creating Cloud Router..."
+ROUTER_NAME="${NETWORK}-router"
+if gcloud compute routers describe "$ROUTER_NAME" --region="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+  success "Router $ROUTER_NAME already exists"
+else
+  gcloud compute routers create "$ROUTER_NAME" \
+    --network="$NETWORK" \
+    --region="$REGION" \
+    --project="$PROJECT_ID" &>/dev/null
+  success "Router $ROUTER_NAME created"
+fi
+
+# Cloud NAT (outbound internet for VMs without external IPs)
+step "Creating Cloud NAT..."
+NAT_NAME="${NETWORK}-nat"
+if gcloud compute routers nats describe "$NAT_NAME" --router="$ROUTER_NAME" --region="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+  success "NAT $NAT_NAME already exists"
+else
+  gcloud compute routers nats create "$NAT_NAME" \
+    --router="$ROUTER_NAME" \
+    --region="$REGION" \
+    --project="$PROJECT_ID" \
+    --auto-allocate-nat-external-ips \
+    --nat-all-subnet-ip-ranges &>/dev/null
+  success "NAT $NAT_NAME created (outbound internet for agent VMs)"
+fi
+
+# Firewall: Allow SSH via IAP
+step "Creating IAP SSH firewall rule..."
+FW_IAP_NAME="allow-iap-ssh-${NETWORK}"
+if gcloud compute firewall-rules describe "$FW_IAP_NAME" --project="$PROJECT_ID" &>/dev/null; then
+  success "Firewall rule $FW_IAP_NAME already exists"
+else
+  gcloud compute firewall-rules create "$FW_IAP_NAME" \
+    --network="$NETWORK" \
+    --allow=tcp:22 \
+    --source-ranges=35.235.240.0/20 \
+    --target-tags="$FW_TAG" \
+    --project="$PROJECT_ID" \
+    --description="Allow SSH via IAP to agent VMs" &>/dev/null
+  success "Firewall rule $FW_IAP_NAME created"
+fi
+
+# Firewall: Deny all other ingress (defense in depth)
+step "Creating deny-all ingress firewall rule..."
+FW_DENY_NAME="deny-all-ingress-${NETWORK}"
+if gcloud compute firewall-rules describe "$FW_DENY_NAME" --project="$PROJECT_ID" &>/dev/null; then
+  success "Firewall rule $FW_DENY_NAME already exists"
+else
+  gcloud compute firewall-rules create "$FW_DENY_NAME" \
+    --network="$NETWORK" \
+    --action=DENY \
+    --rules=all \
+    --source-ranges=0.0.0.0/0 \
+    --priority=65534 \
+    --target-tags="$FW_TAG" \
+    --project="$PROJECT_ID" \
+    --description="Deny all ingress to agent VMs (except IAP)" &>/dev/null
+  success "Firewall rule $FW_DENY_NAME created"
+fi
+
+# Grant IAP tunnel access to the service account
+step "Granting IAP tunnel access to service account..."
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:$SA_EMAIL" \
+  --role="roles/iap.tunnelResourceAccessor" &>/dev/null 2>&1 || true
+success "IAP tunnel access granted"
+
+info "Network ready: VPC + Subnet + NAT + IAP SSH + deny-all ingress"
+
+
+# ═══════════════════════════════════════════════════════════════════
 # STEP 9: Verification
 # ═══════════════════════════════════════════════════════════════════
 
