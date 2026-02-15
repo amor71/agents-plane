@@ -25,7 +25,7 @@ KEY_FILE="$CONFIG_DIR/workspace-admin-key.json"
 SA_NAME="openclaw-workspace-admin"
 SA_DISPLAY="OpenClaw Workspace Admin"
 
-SCOPES="https://www.googleapis.com/auth/admin.directory.user,https://www.googleapis.com/auth/admin.directory.user.security,https://www.googleapis.com/auth/admin.directory.userschema,https://www.googleapis.com/auth/cloud-platform"
+SCOPES="https://www.googleapis.com/auth/admin.directory.user,https://www.googleapis.com/auth/admin.directory.user.security,https://www.googleapis.com/auth/admin.directory.userschema,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/script.projects,https://www.googleapis.com/auth/script.deployments,https://www.googleapis.com/auth/drive"
 
 APIS=(
   "admin.googleapis.com"
