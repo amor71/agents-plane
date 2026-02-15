@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="Agents Plane" width="700"/>
+</p>
+
 # 🤖 Agents Plane — Google Workspace + GCP Integration
 
 **Agents Plane** lets you provision and manage AI agents for your organization directly from Google Workspace. Each user in your domain can be assigned a personal AI agent running on a dedicated GCP VM, managed through the familiar Google Admin Console. Toggle agents on/off per user, set budgets, choose models — all from the same place you manage email and drives.
