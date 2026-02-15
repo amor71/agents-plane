@@ -25,7 +25,7 @@ KEY_FILE="$CONFIG_DIR/workspace-admin-key.json"
 SA_NAME="openclaw-workspace-admin"
 SA_DISPLAY="OpenClaw Workspace Admin"
 
-SCOPES="https://www.googleapis.com/auth/admin.directory.user,https://www.googleapis.com/auth/admin.directory.user.security,https://www.googleapis.com/auth/admin.directory.userschema,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/script.projects,https://www.googleapis.com/auth/script.deployments,https://www.googleapis.com/auth/drive"
+SCOPES="https://www.googleapis.com/auth/admin.directory.user,https://www.googleapis.com/auth/admin.directory.user.security,https://www.googleapis.com/auth/admin.directory.userschema,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/script.projects,https://www.googleapis.com/auth/script.deployments,https://www.googleapis.com/auth/script.scriptapp,https://www.googleapis.com/auth/drive"
 
 APIS=(
   "admin.googleapis.com"
@@ -904,6 +904,16 @@ else
       --format="value(serviceConfig.uri)" 2>/dev/null || echo "unknown")
     success "Cloud Function deployed"
     dim "URL: $CF_URL"
+
+    # Ensure the function is publicly callable (it validates AUTH_SECRET internally)
+    step "Granting public access to Cloud Function..."
+    gcloud run services add-iam-policy-binding agents-plane-provisioner \
+      --region="$REGION" \
+      --project="$PROJECT_ID" \
+      --member="allUsers" \
+      --role="roles/run.invoker" \
+      --quiet 2>/dev/null && success "Public invoker access granted" || warn "Could not grant public access — you may need to do this manually"
+
     CF_OK=true
   else
     fail "Cloud Function deployment failed"
@@ -975,7 +985,10 @@ now = int(time.time())
 scopes = " ".join([
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
+    "https://www.googleapis.com/auth/script.scriptapp",
     "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/admin.directory.user",
+    "https://www.googleapis.com/auth/admin.directory.userschema",
 ])
 
 def b64url(data):
@@ -1146,7 +1159,9 @@ except urllib.error.HTTPError as e:
 # The Apps Script API doesn't support creating triggers programmatically.
 # We need to run the script's own setup function to create the trigger.
 
-# Run createTimeTrigger function if it exists, otherwise advise user
+# Run setupTrigger to create the 5-minute polling trigger.
+# This requires the Apps Script Execution API + proper scopes.
+# We try devMode=True first (runs HEAD version, no deployment needed for execution).
 run_body = json.dumps({
     "function": "setupTrigger",
     "devMode": True,
@@ -1158,13 +1173,20 @@ req = urllib.request.Request(
     headers=headers,
 )
 trigger_ok = False
+trigger_error = ""
 try:
     resp = urllib.request.urlopen(req)
     run_result = json.loads(resp.read())
-    if "error" not in run_result:
+    if "error" in run_result:
+        trigger_error = json.dumps(run_result["error"])[:300]
+    elif run_result.get("response", {}).get("result", {}).get("error"):
+        trigger_error = str(run_result["response"]["result"]["error"])[:300]
+    else:
         trigger_ok = True
-except:
-    pass
+except urllib.error.HTTPError as e:
+    trigger_error = f"HTTP {e.code}: {e.read().decode()[:300]}"
+except Exception as e:
+    trigger_error = str(e)[:300]
 
 print(json.dumps({
     "ok": True,
