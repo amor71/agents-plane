@@ -200,6 +200,29 @@ function testProvision() {
 }
 
 /**
+ * Set up the 5-minute polling trigger automatically.
+ * Called by setup.sh via the Apps Script API, or run manually.
+ * Safe to call multiple times — deletes existing triggers first.
+ */
+function setupTrigger() {
+  // Remove any existing triggers for pollForAgentChanges
+  const triggers = ScriptApp.getProjectTriggers();
+  for (const trigger of triggers) {
+    if (trigger.getHandlerFunction() === 'pollForAgentChanges') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  }
+
+  // Create a new 5-minute trigger
+  ScriptApp.newTrigger('pollForAgentChanges')
+    .timeBased()
+    .everyMinutes(5)
+    .create();
+
+  Logger.log('✅ Trigger created: pollForAgentChanges every 5 minutes');
+}
+
+/**
  * List all users with agents enabled.
  */
 function listEnabledAgents() {
