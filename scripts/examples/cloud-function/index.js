@@ -75,12 +75,13 @@ exports.provisionAgent = async (req, res) => {
 /**
  * Provision a new agent VM.
  */
-async function provisionAgent(vmName, safeName, email, model = 'gpt-4o', budget = 50) {
+async function provisionAgent(vmName, safeName, email, model = 'claude-opus-4-6', budget = 50) {
   // Check if VM already exists
   try {
     const [instance] = await instancesClient.get({ project: PROJECT, zone: ZONE, instance: vmName });
     if (instance.status === 'TERMINATED') {
-      await instancesClient.start({ project: PROJECT, zone: ZONE, instance: vmName });
+      const [startOp] = await instancesClient.start({ project: PROJECT, zone: ZONE, instance: vmName });
+      if (startOp && typeof startOp.promise === 'function') await startOp.promise();
       return { status: 'started', vmName };
     }
     return { status: 'already_exists', vmName };
@@ -96,7 +97,7 @@ async function provisionAgent(vmName, safeName, email, model = 'gpt-4o', budget 
     await secretManager.createSecret({
       parent,
       secretId: secretName,
-      secret: { replication: { automatic: {} } },
+      secret: { replication: { auto: {} } },
     });
     await secretManager.addSecretVersion({
       parent: `${parent}/secrets/${secretName}`,
@@ -172,11 +173,16 @@ logger "OpenClaw agent provisioned for \$AGENT_NAME"
     ...config,
   };
 
-  await instancesClient.insert({
+  const [operation] = await instancesClient.insert({
     project: PROJECT,
     zone: ZONE,
     instanceResource,
   });
+
+  // Wait for the LRO to complete (v4+ API)
+  if (operation && typeof operation.promise === 'function') {
+    await operation.promise();
+  }
 
   return { status: 'created', vmName };
 }
@@ -188,7 +194,8 @@ async function deprovisionAgent(vmName, safeName) {
   try {
     const [instance] = await instancesClient.get({ project: PROJECT, zone: ZONE, instance: vmName });
     if (instance.status === 'RUNNING') {
-      await instancesClient.stop({ project: PROJECT, zone: ZONE, instance: vmName });
+      const [stopOp] = await instancesClient.stop({ project: PROJECT, zone: ZONE, instance: vmName });
+      if (stopOp && typeof stopOp.promise === 'function') await stopOp.promise();
     }
     return { status: 'stopped', vmName };
   } catch (err) {
