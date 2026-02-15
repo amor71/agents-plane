@@ -305,6 +305,9 @@ cat > /home/agent/.openclaw/openclaw.json << CFGEOF
       "workspace": "/home/agent/.openclaw/workspace",
       "models": {
         "anthropic/\$AGENT_MODEL": {}
+      },
+      "heartbeat": {
+        "every": "30m"
       }
     },
     "list": [
