@@ -895,7 +895,8 @@ else
     --entry-point=provisionAgent \
     --region="$REGION" \
     --project="$PROJECT_ID" \
-    --set-env-vars="PROJECT_ID=$PROJECT_ID,REGION=$REGION,ZONE=${REGION}-b,VM_TYPE=$VM_TYPE,DEFAULT_MODEL=$DEFAULT_MODEL" \
+    --memory=512MB \
+    --set-env-vars="PROJECT_ID=$PROJECT_ID,GCP_PROJECT=$PROJECT_ID,REGION=$REGION,ZONE=${REGION}-b,VM_TYPE=$VM_TYPE,DEFAULT_MODEL=$DEFAULT_MODEL" \
     --quiet 2>/dev/null &
   spinner $! "Deploying Cloud Function (this may take a few minutes)..."
   if wait $!; then

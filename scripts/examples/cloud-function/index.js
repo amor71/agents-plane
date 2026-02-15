@@ -21,7 +21,7 @@ const { SecretManagerServiceClient } = require('@google-cloud/secret-manager');
 const instancesClient = new compute.InstancesClient();
 const secretManager = new SecretManagerServiceClient();
 
-const PROJECT = process.env.GCP_PROJECT || process.env.GCLOUD_PROJECT;
+const PROJECT = process.env.GCP_PROJECT || process.env.PROJECT_ID || process.env.GCLOUD_PROJECT;
 const ZONE = process.env.GCP_ZONE || 'us-east4-b';
 const REGION = ZONE.replace(/-[a-z]$/, '');
 const AUTH_SECRET = process.env.AUTH_SECRET;
