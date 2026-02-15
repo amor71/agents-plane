@@ -15,11 +15,10 @@
  *     --set-env-vars "AUTH_SECRET=your-secret,GCP_PROJECT=your-project,GCP_ZONE=us-east4-b"
  */
 
-const { Compute } = require('@google-cloud/compute');
+const compute = require('@google-cloud/compute');
 const { SecretManagerServiceClient } = require('@google-cloud/secret-manager');
-const { IAMClient } = require('@google-cloud/iam');
 
-const compute = new Compute();
+const instancesClient = new compute.InstancesClient();
 const secretManager = new SecretManagerServiceClient();
 
 const PROJECT = process.env.GCP_PROJECT || process.env.GCLOUD_PROJECT;
@@ -77,18 +76,18 @@ exports.provisionAgent = async (req, res) => {
  * Provision a new agent VM.
  */
 async function provisionAgent(vmName, safeName, email, model = 'gpt-4o', budget = 50) {
-  const zone = compute.zone(ZONE);
-
   // Check if VM already exists
-  const [vms] = await zone.getVMs({ filter: `name="${vmName}"` });
-  if (vms.length > 0) {
-    const vm = vms[0];
-    const [metadata] = await vm.getMetadata();
-    if (metadata.status === 'TERMINATED') {
-      await vm.start();
+  try {
+    const [instance] = await instancesClient.get({ project: PROJECT, zone: ZONE, instance: vmName });
+    if (instance.status === 'TERMINATED') {
+      const [op] = await instancesClient.start({ project: PROJECT, zone: ZONE, instance: vmName });
+      await op.promise();
       return { status: 'started', vmName };
     }
     return { status: 'already_exists', vmName };
+  } catch (err) {
+    if (!err.message?.includes('not found') && err.code !== 5) throw err;
+    // VM doesn't exist, continue to create
   }
 
   // Create secret
@@ -167,7 +166,16 @@ logger "OpenClaw agent provisioned for \$AGENT_NAME"
     },
   };
 
-  const [, operation] = await zone.createVM(vmName, config);
+  const instanceResource = {
+    name: vmName,
+    ...config,
+  };
+
+  const [operation] = await instancesClient.insert({
+    project: PROJECT,
+    zone: ZONE,
+    instanceResource,
+  });
   await operation.promise();
 
   return { status: 'created', vmName };
@@ -177,19 +185,19 @@ logger "OpenClaw agent provisioned for \$AGENT_NAME"
  * Deprovision (stop) an agent VM. Does NOT delete to preserve data.
  */
 async function deprovisionAgent(vmName, safeName) {
-  const zone = compute.zone(ZONE);
-  const [vms] = await zone.getVMs({ filter: `name="${vmName}"` });
-
-  if (vms.length > 0) {
-    const vm = vms[0];
-    const [metadata] = await vm.getMetadata();
-    if (metadata.status === 'RUNNING') {
-      await vm.stop();
+  try {
+    const [instance] = await instancesClient.get({ project: PROJECT, zone: ZONE, instance: vmName });
+    if (instance.status === 'RUNNING') {
+      const [op] = await instancesClient.stop({ project: PROJECT, zone: ZONE, instance: vmName });
+      await op.promise();
     }
     return { status: 'stopped', vmName };
+  } catch (err) {
+    if (err.message?.includes('not found') || err.code === 5) {
+      return { status: 'not_found', vmName };
+    }
+    throw err;
   }
-
-  return { status: 'not_found', vmName };
 }
 
 // For local testing
