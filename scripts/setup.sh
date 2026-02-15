@@ -917,7 +917,7 @@ fi
 header "📜 Step 12 · Apps Script Trigger"
 
 APPS_SCRIPT_OK=false
-TRIGGER_SOURCE="${SCRIPT_DIR}/../examples/apps-script/trigger.gs"
+TRIGGER_SOURCE="${SCRIPT_DIR}/examples/apps-script-trigger.js"
 
 echo ""
 info "Apps Script requires manual deployment via script.google.com."
