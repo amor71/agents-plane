@@ -550,6 +550,140 @@ fi
 
 echo ""
 read -rp "  Press Enter once you've completed the delegation... " _
+
+# Verify delegation actually works by requesting a token
+step "Verifying delegation..."
+VERIFY_RESULT=$(python3 - "$KEY_FILE" "$ADMIN_EMAIL" <<'PYEOF'
+import json, sys, time, urllib.request, urllib.error, urllib.parse, base64
+
+key_file = sys.argv[1]
+admin_email = sys.argv[2]
+
+with open(key_file) as f:
+    creds = json.load(f)
+
+sa_email = creds["client_email"]
+private_key = creds["private_key"]
+
+now = int(time.time())
+# Test with a representative subset of scopes
+scopes = " ".join([
+    "https://www.googleapis.com/auth/admin.directory.user",
+    "https://www.googleapis.com/auth/script.projects",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/gmail.send",
+])
+
+def b64url(data):
+    if isinstance(data, str): data = data.encode()
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+def sign_rs256(message, pem_key):
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    key = serialization.load_pem_private_key(pem_key.encode(), password=None)
+    return key.sign(message.encode(), padding.PKCS1v15(), hashes.SHA256())
+
+jwt_header = {"alg": "RS256", "typ": "JWT"}
+jwt_claim = {
+    "iss": sa_email, "sub": admin_email, "scope": scopes,
+    "aud": "https://oauth2.googleapis.com/token",
+    "iat": now, "exp": now + 60,
+}
+
+header_b64 = b64url(json.dumps(jwt_header))
+claim_b64 = b64url(json.dumps(jwt_claim))
+signing_input = f"{header_b64}.{claim_b64}"
+signature = sign_rs256(signing_input, private_key)
+assertion = f"{signing_input}.{b64url(signature)}"
+
+token_data = urllib.parse.urlencode({
+    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    "assertion": assertion,
+}).encode()
+
+try:
+    req = urllib.request.Request("https://oauth2.googleapis.com/token", data=token_data)
+    resp = urllib.request.urlopen(req)
+    print("ok")
+except urllib.error.HTTPError as e:
+    body = e.read().decode()
+    print(f"fail:{e.code}:{body[:200]}")
+PYEOF
+)
+
+if [[ "$VERIFY_RESULT" == "ok" ]]; then
+  success "Workspace delegation verified ✓ (token exchange works)"
+else
+  echo ""
+  warn "Delegation verification failed: $VERIFY_RESULT"
+  echo ""
+  echo -e "  ${YELLOW}The scopes may not have been saved correctly in Admin Console.${NC}"
+  echo -e "  ${YELLOW}Please go back to:${NC}"
+  echo -e "     ${BOLD}${CYAN}https://admin.google.com/ac/owl/domainwidedelegation${NC}"
+  echo ""
+  echo -e "  ${YELLOW}Make sure the Client ID and ALL scopes are saved.${NC}"
+  echo -e "  ${YELLOW}Scopes to paste (all on one line):${NC}"
+  echo ""
+  echo -e "     ${DIM}$SCOPES${NC}"
+  echo ""
+  read -rp "  Press Enter to retry verification (or Ctrl+C to abort)... " _
+  
+  VERIFY_RESULT2=$(python3 - "$KEY_FILE" "$ADMIN_EMAIL" <<'PYEOF2'
+import json, sys, time, urllib.request, urllib.error, urllib.parse, base64
+key_file = sys.argv[1]
+admin_email = sys.argv[2]
+with open(key_file) as f:
+    creds = json.load(f)
+sa_email = creds["client_email"]
+private_key = creds["private_key"]
+now = int(time.time())
+scopes = " ".join([
+    "https://www.googleapis.com/auth/admin.directory.user",
+    "https://www.googleapis.com/auth/script.projects",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/gmail.send",
+])
+def b64url(data):
+    if isinstance(data, str): data = data.encode()
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+def sign_rs256(message, pem_key):
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    key = serialization.load_pem_private_key(pem_key.encode(), password=None)
+    return key.sign(message.encode(), padding.PKCS1v15(), hashes.SHA256())
+jwt_header = {"alg": "RS256", "typ": "JWT"}
+jwt_claim = {
+    "iss": sa_email, "sub": admin_email, "scope": scopes,
+    "aud": "https://oauth2.googleapis.com/token",
+    "iat": now, "exp": now + 60,
+}
+header_b64 = b64url(json.dumps(jwt_header))
+claim_b64 = b64url(json.dumps(jwt_claim))
+signing_input = f"{header_b64}.{claim_b64}"
+signature = sign_rs256(signing_input, private_key)
+assertion = f"{signing_input}.{b64url(signature)}"
+token_data = urllib.parse.urlencode({
+    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    "assertion": assertion,
+}).encode()
+try:
+    req = urllib.request.Request("https://oauth2.googleapis.com/token", data=token_data)
+    resp = urllib.request.urlopen(req)
+    print("ok")
+except urllib.error.HTTPError as e:
+    body = e.read().decode()
+    print(f"fail:{e.code}:{body[:200]}")
+PYEOF2
+)
+  
+  if [[ "$VERIFY_RESULT2" == "ok" ]]; then
+    success "Workspace delegation verified ✓"
+  else
+    fail "Delegation still not working. Cannot continue without valid delegation. Error: $VERIFY_RESULT2"
+  fi
+fi
+
 success "Workspace delegation configured"
 save_step 6
 fi  # end Step 6 skip
