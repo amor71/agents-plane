@@ -917,6 +917,22 @@ fi
 
 header "📜 Step 12 · Apps Script Trigger"
 
+# The Apps Script API requires a user-level toggle in addition to the project-level API.
+# Check and prompt the user to enable it.
+echo ""
+echo -e "  ${YELLOW}The Apps Script API must be enabled at the user level.${NC}"
+echo -e "  Please visit: ${BOLD}${CYAN}https://script.google.com/home/usersettings${NC}"
+echo -e "  and make sure ${BOLD}\"Google Apps Script API\"${NC} is turned ${BOLD}ON${NC}."
+echo ""
+if command -v open &>/dev/null; then
+  read -rp "  Open Apps Script settings in browser? (Y/n): " open_as
+  if [[ ! "$open_as" =~ ^[Nn] ]]; then
+    open "https://script.google.com/home/usersettings" 2>/dev/null || true
+  fi
+fi
+read -rp "  Press Enter once the Apps Script API is enabled... " _
+echo ""
+
 APPS_SCRIPT_OK=false
 TRIGGER_SOURCE="${SCRIPT_DIR}/examples/apps-script-trigger.js"
 

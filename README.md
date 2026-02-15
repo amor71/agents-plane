@@ -191,6 +191,7 @@ gcloud functions deploy provision-agent \
 
 #### 2. Set Up Apps Script
 
+0. **Enable the Apps Script API for your user**: Visit [script.google.com/home/usersettings](https://script.google.com/home/usersettings) and turn on **"Google Apps Script API"** (this is a user-level toggle, separate from the project API)
 1. Go to [script.google.com](https://script.google.com)
 2. Create a new project
 3. Paste the contents of `examples/apps-script-trigger.js`
