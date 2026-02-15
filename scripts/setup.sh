@@ -688,7 +688,295 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════
-# STEP 10: Summary
+# STEP 10: Create Custom User Schema
+# ═══════════════════════════════════════════════════════════════════
+
+header "🏷️  Step 10 · Create Custom User Schema"
+
+SCHEMA_OK=false
+
+step "Obtaining access token for Admin SDK..."
+
+# Use inline Python to get a domain-wide delegated access token
+# and create the custom user schema via Admin SDK
+SCHEMA_RESULT=$(python3 - "$KEY_FILE" "$ADMIN_EMAIL" <<'PYEOF'
+import json, sys, time, urllib.request, urllib.error, urllib.parse
+try:
+    import jwt as pyjwt
+    HAS_PYJWT = True
+except ImportError:
+    HAS_PYJWT = False
+
+key_file = sys.argv[1]
+admin_email = sys.argv[2]
+
+with open(key_file) as f:
+    creds = json.load(f)
+
+sa_email = creds["client_email"]
+private_key = creds["private_key"]
+
+# Build JWT for domain-wide delegation
+now = int(time.time())
+scopes = "https://www.googleapis.com/auth/admin.directory.userschema"
+
+jwt_header = {"alg": "RS256", "typ": "JWT"}
+jwt_claim = {
+    "iss": sa_email,
+    "sub": admin_email,
+    "scope": scopes,
+    "aud": "https://oauth2.googleapis.com/token",
+    "iat": now,
+    "exp": now + 3600,
+}
+
+# Sign JWT using cryptography (available on macOS / most systems)
+import base64, hashlib, struct
+
+def b64url(data):
+    if isinstance(data, str):
+        data = data.encode()
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+def sign_rs256(message, pem_key):
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    key = serialization.load_pem_private_key(pem_key.encode(), password=None)
+    return key.sign(message.encode(), padding.PKCS1v15(), hashes.SHA256())
+
+header_b64 = b64url(json.dumps(jwt_header))
+claim_b64 = b64url(json.dumps(jwt_claim))
+signing_input = f"{header_b64}.{claim_b64}"
+
+try:
+    signature = sign_rs256(signing_input, private_key)
+except Exception as e:
+    print(json.dumps({"ok": False, "error": f"JWT signing failed: {e}"}))
+    sys.exit(0)
+
+assertion = f"{signing_input}.{b64url(signature)}"
+
+# Exchange for access token
+token_data = urllib.parse.urlencode({
+    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    "assertion": assertion,
+}).encode()
+
+req = urllib.request.Request("https://oauth2.googleapis.com/token", data=token_data)
+try:
+    resp = urllib.request.urlopen(req)
+    token_resp = json.loads(resp.read())
+    access_token = token_resp["access_token"]
+except Exception as e:
+    print(json.dumps({"ok": False, "error": f"Token exchange failed: {e}"}))
+    sys.exit(0)
+
+# Create custom schema
+schema_body = json.dumps({
+    "schemaName": "AgentConfig",
+    "displayName": "Agent Configuration",
+    "fields": [
+        {
+            "fieldName": "agentEnabled",
+            "fieldType": "BOOL",
+            "displayName": "Agent Enabled",
+            "readAccessType": "ADMINS_AND_SELF",
+            "multiValued": False
+        },
+        {
+            "fieldName": "agentModel",
+            "fieldType": "STRING",
+            "displayName": "Agent Model",
+            "readAccessType": "ADMINS_AND_SELF",
+            "multiValued": False
+        },
+        {
+            "fieldName": "agentBudget",
+            "fieldType": "STRING",
+            "displayName": "Monthly Budget",
+            "readAccessType": "ADMINS_AND_SELF",
+            "multiValued": False
+        }
+    ]
+}).encode()
+
+schema_req = urllib.request.Request(
+    "https://admin.googleapis.com/admin/directory/v1/customer/my_customer/schemas",
+    data=schema_body,
+    headers={
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    },
+)
+
+try:
+    resp = urllib.request.urlopen(schema_req)
+    result = json.loads(resp.read())
+    print(json.dumps({"ok": True, "schemaId": result.get("schemaId", ""), "status": "created"}))
+except urllib.error.HTTPError as e:
+    body = e.read().decode()
+    if e.code == 409 or "already exists" in body.lower() or "duplicate" in body.lower():
+        print(json.dumps({"ok": True, "status": "exists"}))
+    else:
+        print(json.dumps({"ok": False, "error": f"HTTP {e.code}: {body}"}))
+except Exception as e:
+    print(json.dumps({"ok": False, "error": str(e)}))
+PYEOF
+) || SCHEMA_RESULT='{"ok":false,"error":"Python script failed"}'
+
+SCHEMA_STATUS=$(echo "$SCHEMA_RESULT" | jq -r '.ok // false' 2>/dev/null)
+SCHEMA_MSG=$(echo "$SCHEMA_RESULT" | jq -r '.status // .error // "unknown"' 2>/dev/null)
+
+if [[ "$SCHEMA_STATUS" == "true" ]]; then
+  if [[ "$SCHEMA_MSG" == "exists" ]]; then
+    success "AgentConfig schema already exists — skipped"
+  else
+    success "AgentConfig schema created (agentEnabled, agentModel, agentBudget)"
+  fi
+  SCHEMA_OK=true
+else
+  fail "Failed to create schema: $SCHEMA_MSG"
+  warn "You can create it manually in Admin Console → Directory → Custom attributes"
+fi
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 11: Deploy Cloud Function
+# ═══════════════════════════════════════════════════════════════════
+
+header "☁️  Step 11 · Deploy Cloud Function"
+
+CF_OK=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CF_SOURCE="${SCRIPT_DIR}/../examples/cloud-function"
+
+if [[ ! -d "$CF_SOURCE" ]]; then
+  warn "Cloud Function source not found at $CF_SOURCE"
+  info "Skipping deployment — you can deploy manually later"
+  info "See ${CYAN}examples/cloud-function/${NC} for the source code"
+else
+  step "Deploying agents-plane-provisioner..."
+
+  gcloud functions deploy agents-plane-provisioner \
+    --gen2 \
+    --runtime=nodejs20 \
+    --trigger-http \
+    --no-allow-unauthenticated \
+    --source="$CF_SOURCE" \
+    --entry-point=provisionAgent \
+    --region="$REGION" \
+    --project="$PROJECT_ID" \
+    --set-env-vars="PROJECT_ID=$PROJECT_ID,REGION=$REGION,ZONE=${REGION}-b,VM_TYPE=$VM_TYPE,DEFAULT_MODEL=$DEFAULT_MODEL" \
+    --quiet 2>/dev/null &
+  spinner $! "Deploying Cloud Function (this may take a few minutes)..."
+  if wait $!; then
+    CF_URL=$(gcloud functions describe agents-plane-provisioner \
+      --gen2 --region="$REGION" --project="$PROJECT_ID" \
+      --format="value(serviceConfig.uri)" 2>/dev/null || echo "unknown")
+    success "Cloud Function deployed"
+    dim "URL: $CF_URL"
+    CF_OK=true
+  else
+    fail "Cloud Function deployment failed"
+    warn "Check logs: gcloud functions logs read agents-plane-provisioner --region=$REGION"
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 12: Deploy Apps Script Trigger
+# ═══════════════════════════════════════════════════════════════════
+
+header "📜 Step 12 · Apps Script Trigger"
+
+APPS_SCRIPT_OK=false
+TRIGGER_SOURCE="${SCRIPT_DIR}/../examples/apps-script/trigger.gs"
+
+echo ""
+info "Apps Script requires manual deployment via script.google.com."
+echo ""
+
+if [[ -f "$TRIGGER_SOURCE" ]]; then
+  TRIGGER_CODE=$(cat "$TRIGGER_SOURCE")
+else
+  TRIGGER_CODE='// Apps Script trigger — auto-generated by Agents Plane setup
+// Paste this into a new Apps Script project at script.google.com
+
+function onUserUpdate(e) {
+  var user = AdminDirectory.Users.get(e.userKey, {
+    projection: "full",
+    customFieldMask: "AgentConfig"
+  });
+
+  var config = user.customSchemas && user.customSchemas.AgentConfig;
+  if (!config) return;
+
+  if (config.agentEnabled) {
+    provisionAgent(e.userKey, config.agentModel, config.agentBudget);
+  }
+}
+
+function provisionAgent(email, model, budget) {
+  var url = "CLOUD_FUNCTION_URL_HERE";
+  var payload = {
+    email: email,
+    model: model || "'"$DEFAULT_MODEL"'",
+    budget: budget || ""
+  };
+
+  UrlFetchApp.fetch(url, {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    headers: {
+      "Authorization": "Bearer " + ScriptApp.getOAuthToken()
+    }
+  });
+}'
+fi
+
+# Replace placeholder with actual Cloud Function URL if we have it
+if [[ "${CF_URL:-}" != "unknown" && -n "${CF_URL:-}" ]]; then
+  TRIGGER_CODE="${TRIGGER_CODE//CLOUD_FUNCTION_URL_HERE/$CF_URL}"
+fi
+
+echo -e "  ${BOLD}━━━ Instructions ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "  1. Open ${BOLD}${CYAN}https://script.google.com/create${NC}"
+echo -e "  2. Paste the trigger code (copied to clipboard if on macOS)"
+echo -e "  3. Enable the ${BOLD}Admin SDK${NC} advanced service:"
+echo -e "     Services → Add → Admin SDK Directory API"
+echo -e "  4. Add a trigger: Triggers → Add → ${BOLD}onUserUpdate${NC}"
+echo -e "     Event source: ${BOLD}Admin Directory${NC} → User updated"
+echo ""
+echo -e "  ${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# Copy to clipboard on macOS
+if command -v pbcopy &>/dev/null; then
+  echo "$TRIGGER_CODE" | pbcopy
+  success "Trigger code copied to clipboard 📋"
+  APPS_SCRIPT_OK=true
+else
+  echo ""
+  info "Trigger code:"
+  echo ""
+  echo -e "${DIM}"
+  echo "$TRIGGER_CODE" | sed 's/^/    /'
+  echo -e "${NC}"
+  APPS_SCRIPT_OK=true
+fi
+
+echo ""
+if command -v open &>/dev/null; then
+  read -rp "  Open script.google.com in browser? (Y/n): " open_script
+  if [[ ! "$open_script" =~ ^[Nn] ]]; then
+    open "https://script.google.com/create" 2>/dev/null || true
+  fi
+fi
+
+read -rp "  Press Enter once you've set up the Apps Script trigger... " _
+success "Apps Script trigger configured"
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 13: Summary
 # ═══════════════════════════════════════════════════════════════════
 
 header "🎉 Setup Complete!"
@@ -707,6 +995,12 @@ echo -e "  Service Account:  ${DIM}$SA_EMAIL${NC}"
 echo -e "  Default VM:       ${BOLD}$VM_TYPE${NC}"
 echo -e "  Default Model:    ${BOLD}$DEFAULT_MODEL${NC}"
 echo ""
+echo -e "  ${BOLD}Workspace Integration${NC}"
+echo -e "  ────────────────────────────────────────"
+echo -e "  Custom Schema:    $( $SCHEMA_OK && echo -e "${GREEN}✅ AgentConfig${NC}" || echo -e "${YELLOW}⚠️  Manual setup needed${NC}" )"
+echo -e "  Cloud Function:   $( ${CF_OK:-false} && echo -e "${GREEN}✅ Deployed${NC}" || echo -e "${YELLOW}⚠️  Not deployed${NC}" )"
+echo -e "  Apps Script:      $( $APPS_SCRIPT_OK && echo -e "${GREEN}✅ Configured${NC}" || echo -e "${YELLOW}⚠️  Manual setup needed${NC}" )"
+echo ""
 echo -e "  ${BOLD}Files Created${NC}"
 echo -e "  ────────────────────────────────────────"
 echo -e "  Config:   $CONFIG_FILE"
@@ -720,8 +1014,8 @@ echo ""
 echo -e "  2. Check plane status:"
 echo -e "     ${CYAN}./status.sh${NC}"
 echo ""
-echo -e "  3. Set up Workspace automation (optional):"
-echo -e "     See ${CYAN}examples/${NC} for Apps Script + Cloud Function triggers"
+echo -e "  3. Toggle agent for a user in Admin Console:"
+echo -e "     ${CYAN}Admin → Users → User → AgentConfig → agentEnabled = true${NC}"
 echo ""
 echo -e "  ${DIM}Documentation: README.md${NC}"
 echo -e "  ${DIM}Config:        $CONFIG_FILE${NC}"
