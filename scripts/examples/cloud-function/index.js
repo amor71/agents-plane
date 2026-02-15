@@ -90,24 +90,33 @@ async function provisionAgent(vmName, safeName, email, model = 'claude-opus-4-6'
     // VM doesn't exist, continue to create
   }
 
-  // Create secret
+  // Create secret (or update if exists)
   const secretName = `agent-${safeName}-config`;
+  const parent = `projects/${PROJECT}`;
+  const secretPath = `${parent}/secrets/${secretName}`;
+
   try {
-    const parent = `projects/${PROJECT}`;
     await secretManager.createSecret({
       parent,
       secretId: secretName,
-      secret: { replication: { auto: {} } },
+      secret: { replication: { automatic: {} } },
     });
-    await secretManager.addSecretVersion({
-      parent: `${parent}/secrets/${secretName}`,
-      payload: {
-        data: Buffer.from(JSON.stringify({ user: email, model, budget })),
-      },
-    });
+    console.log(`Created secret ${secretName}`);
   } catch (err) {
-    if (!err.message.includes('ALREADY_EXISTS')) throw err;
+    if (err.code === 6 || err.message?.includes('ALREADY_EXISTS')) {
+      console.log(`Secret ${secretName} already exists, adding new version`);
+    } else {
+      throw err;
+    }
   }
+
+  // Always add a new version with latest config
+  await secretManager.addSecretVersion({
+    parent: secretPath,
+    payload: {
+      data: Buffer.from(JSON.stringify({ user: email, model, budget })),
+    },
+  });
 
   // Startup script
   const startupScript = `#!/bin/bash
