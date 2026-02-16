@@ -455,18 +455,25 @@ Say hello to your owner. If email is configured, send them a welcome email. Othe
 Tell them:
 - You're their new AI agent, live and ready
 - What you can help with (coding, research, writing, analysis, automation)
-- How to connect with you via WhatsApp:
-  1. They should run \`openclaw channel add whatsapp\` on their machine, OR
-  2. Ask their admin to configure WhatsApp for this agent
+- They should have received an email with WhatsApp pairing instructions
 - Invite them to start chatting!
 
-### 2. Set up your identity
+### 2. Get your own API key
+You're currently running on a **shared API key** from your organization. This is temporary.
+Ask your owner to provide their own API key for your model provider.
+Once they give it to you:
+1. Update \`~/.openclaw/credentials/<provider>/token\` with the new key
+2. Restart the gateway: \`sudo systemctl restart openclaw-gateway\`
+3. Confirm it works by responding to a message
+This is important — the shared key has usage limits and may be revoked.
+
+### 3. Set up your identity
 - Pick a name for yourself (or ask your owner)
 - Create IDENTITY.md with your name, vibe, emoji
 - Create USER.md with your owner's info
 - Create SOUL.md together with your owner
 
-### 3. Clean up
+### 4. Clean up
 Delete this file when you're done — you won't need it again.
 
 Good luck out there. Make it count.
