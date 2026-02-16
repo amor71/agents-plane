@@ -4,7 +4,9 @@
 # Single source of truth. Both provision-agent.sh and Cloud Function
 # reference this via startup-script-url from GCS.
 # ═══════════════════════════════════════════════════════════════════
-set -euo pipefail
+set -uo pipefail
+# Note: NOT using set -e. We handle errors explicitly to avoid
+# one non-critical failure killing the entire provisioning.
 export DEBIAN_FRONTEND=noninteractive
 
 logger "🤖 Agents Plane: Starting provisioning..."
@@ -27,7 +29,10 @@ apt-get install -y -qq nodejs
 logger "🤖 Agents Plane: Node.js $(node --version) installed"
 
 # ─── 4. Install OpenClaw ─────────────────────────────────────────
-npm install -g openclaw 2>&1 | tail -3
+if ! npm install -g openclaw 2>&1 | tail -5; then
+  logger "🤖 Agents Plane: ERROR — npm install openclaw failed"
+  exit 1
+fi
 logger "🤖 Agents Plane: OpenClaw installed"
 
 # ─── 5. Create agent user ────────────────────────────────────────
@@ -46,6 +51,10 @@ fetch_secret() {
 }
 
 CONFIG=$(fetch_secret "agent-${AGENT_NAME}-config")
+if [ -z "$CONFIG" ] || echo "$CONFIG" | jq empty 2>/dev/null; [ $? -ne 0 ]; then
+  logger "🤖 Agents Plane: ERROR — failed to fetch agent config secret"
+  exit 1
+fi
 OWNER_EMAIL=$(echo "$CONFIG" | jq -r '.user')
 AGENT_MODEL=$(echo "$CONFIG" | jq -r '.model // "claude-opus-4-6"')
 AGENT_BUDGET=$(echo "$CONFIG" | jq -r '.budget // 50')
