@@ -1233,7 +1233,7 @@ else
     --entry-point=provisionAgent \
     --region="$REGION" \
     --project="$PROJECT_ID" \
-    --memory=512MB \
+    --memory=1024MB \
     --set-env-vars="PROJECT_ID=$PROJECT_ID,GCP_PROJECT=$PROJECT_ID,REGION=$REGION,ZONE=${REGION}-b,VM_TYPE=$VM_TYPE,DEFAULT_MODEL=$DEFAULT_MODEL" \
     --quiet 2>/dev/null &
   spinner $! "Deploying Cloud Function (this may take a few minutes)..."
@@ -1577,6 +1577,14 @@ if [[ "$AS_OK" == "true" ]]; then
   jq --arg secret "$AUTH_SECRET" '.appsScript.authSecret = $secret | .appsScript.scriptId = "'"$AS_SCRIPT_ID"'"' \
     "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
   dim "Auth secret saved to config"
+
+  # Set AUTH_SECRET on Cloud Function so it can validate requests
+  step "Setting AUTH_SECRET on Cloud Function..."
+  gcloud run services update agents-plane-provisioner \
+    --project="$PROJECT_ID" \
+    --region="$REGION" \
+    --update-env-vars="AUTH_SECRET=$AUTH_SECRET" \
+    --quiet 2>/dev/null && success "AUTH_SECRET set on Cloud Function" || warn "Failed to set AUTH_SECRET — set it manually"
 else
   fail "Apps Script deployment failed: $AS_ERROR"
   echo ""
