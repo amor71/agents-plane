@@ -309,7 +309,7 @@ curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y -qq nodejs
 
 # Install OpenClaw
-npm install -g @openclaw/cli
+npm install -g openclaw
 
 # Create agent user
 useradd -m -s /bin/bash agent || true
@@ -329,6 +329,67 @@ CONFIG=$(curl -s "https://secretmanager.googleapis.com/v1/projects/${PROJECT}/se
 
 echo "$CONFIG" > /home/agent/.openclaw/agent-config.json
 chown agent:agent /home/agent/.openclaw/agent-config.json
+
+# Extract user email and model from config
+OWNER_EMAIL=$(echo "$CONFIG" | jq -r '.user // .email // "your-admin"')
+AGENT_MODEL=$(echo "$CONFIG" | jq -r '.model // "claude-sonnet"')
+
+# Write gateway config
+cat > /home/agent/.openclaw/openclaw.yaml << GWCFG
+gateway:
+  owner: ${OWNER_EMAIL}
+  model: ${AGENT_MODEL}
+GWCFG
+
+# Write BOOTSTRAP.md — the agent reads this on first boot
+cat > /home/agent/.openclaw/workspace/BOOTSTRAP.md << 'BSTRAP'
+# Welcome — You've Just Been Born 🤖
+
+You are a brand-new AI agent provisioned by **Agents Plane**.
+
+## Who You Belong To
+Check your config at `~/.openclaw/agent-config.json` for your owner's email.
+
+## Your First Task
+1. Send a **welcome email** to your owner introducing yourself
+   - Tell them you're their new AI agent, now live and ready
+   - Explain what you can help with
+   - Include instructions for connecting WhatsApp (link their number via QR)
+   - Invite them to reply and start chatting
+2. After sending the email, delete this file
+
+## How to Send the Email
+Use the `himalaya` or `message` tool to email your owner. If email isn't configured yet,
+write a note in `memory/` so you remember to send it once email is set up.
+
+Good luck out there.
+BSTRAP
+
+chown -R agent:agent /home/agent/.openclaw
+
+# Set up openclaw-gateway as a systemd service
+cat > /etc/systemd/system/openclaw-gateway.service << 'SVCUNIT'
+[Unit]
+Description=OpenClaw Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent
+WorkingDirectory=/home/agent/.openclaw/workspace
+ExecStart=/usr/bin/openclaw gateway start
+Restart=on-failure
+RestartSec=10
+Environment=HOME=/home/agent
+
+[Install]
+WantedBy=multi-user.target
+SVCUNIT
+
+systemctl daemon-reload
+systemctl enable openclaw-gateway
+systemctl start openclaw-gateway
 
 # Signal completion
 echo "AGENT_READY" > /tmp/agent-status
@@ -403,9 +464,9 @@ success "Agent record saved to $AGENT_FILE"
 
 if $SEND_EMAIL && ! $DRY_RUN; then
   header "📧 Step 6 · Welcome Email"
-  info "Welcome email sending requires Apps Script or SMTP setup"
-  info "Skipping for now — user can be notified manually"
-  warn "TODO: Configure email sending in a future update"
+  info "The agent handles its own welcome email on first boot via BOOTSTRAP.md"
+  info "It will email the user with intro + WhatsApp QR instructions automatically"
+  success "No manual email needed — agent self-onboards"
 fi
 
 # ═══════════════════════════════════════════════════════════════════

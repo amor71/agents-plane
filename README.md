@@ -37,15 +37,15 @@ That's it. The script walks you through everything interactively.
 
 ## What the Setup Script Does
 
-The `setup.sh` script runs 10 steps:
+The `setup.sh` script runs 13 steps:
 
 ### Step 1 · Pre-flight Checks
 Verifies `gcloud` CLI, `jq`, and macOS are present. Offers to install missing tools via Homebrew.
 
-### Step 2 · Authentication
+### Step 2 · Google Cloud Authentication
 Opens a browser window for Google sign-in via `gcloud auth login`. Detects your domain automatically.
 
-### Step 3 · Project Selection
+### Step 3 · GCP Project
 Lists your existing GCP projects and lets you pick one — or create a new one. Checks that billing is enabled.
 
 ### Step 4 · Enable APIs
@@ -64,20 +64,32 @@ Creates `openclaw-workspace-admin` service account with:
 - JSON key saved to `~/.openclaw/agents-plane/workspace-admin-key.json`
 - IAM roles: Compute Admin, SA Admin, Secret Manager Admin, IAP Tunnel
 
-### Step 6 · Workspace Delegation (Manual)
+### Step 6 · Google Workspace Delegation (Manual)
 Displays instructions for the one manual step — adding domain-wide delegation in the Google Admin Console. Provides the Client ID and scopes to copy-paste.
 
-### Step 7 · Configuration
+### Step 7 · Configure Your Agents Plane
 Prompts for plane name, GCP region, default VM type, and default AI model.
 
-### Step 8 · Save Config
+### Step 8 · Saving Configuration
 Writes everything to `~/.openclaw/agents-plane/config.json`.
+
+### Step 8.5 · Network Infrastructure
+Creates the VPC network, subnet, firewall rules, and Cloud NAT for agent VMs. Shared across all agents.
 
 ### Step 9 · Verification
 Tests that all APIs, service accounts, keys, and configs are valid.
 
-### Step 10 · Summary
-Prints a beautiful summary with next steps.
+### Step 10 · Create Custom User Schema
+Adds the "AI Agent" custom schema to Google Workspace so agent settings appear in each user's Admin Console profile.
+
+### Step 11 · Deploy Cloud Function
+Deploys the `provision-agent` Cloud Function for automated provisioning triggered by Admin Console changes.
+
+### Step 12 · Apps Script Trigger
+Sets up the Google Apps Script that polls for user schema changes and triggers the Cloud Function.
+
+### Setup Complete!
+Prints a summary with next steps.
 
 ---
 
