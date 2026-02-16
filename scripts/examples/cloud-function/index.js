@@ -118,6 +118,41 @@ async function provisionAgent(vmName, safeName, email, model = 'claude-opus-4-6'
     },
   });
 
+  // Grant default compute SA access to the agent's secret
+  // (VMs created by CF use the default SA, not per-agent SA)
+  const PROJECT_NUMBER = PROJECT.match(/^\d+$/) ? PROJECT : process.env.PROJECT_NUMBER;
+  if (PROJECT_NUMBER) {
+    const defaultSA = `serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com`;
+    try {
+      const [policy] = await secretManager.getIamPolicy({ resource: secretPath });
+      policy.bindings = policy.bindings || [];
+      const alreadyBound = policy.bindings.some(b =>
+        b.role === 'roles/secretmanager.secretAccessor' && b.members?.includes(defaultSA)
+      );
+      if (!alreadyBound) {
+        policy.bindings.push({
+          role: 'roles/secretmanager.secretAccessor',
+          members: [defaultSA],
+        });
+        await secretManager.setIamPolicy({ resource: secretPath, policy });
+        console.log(`Granted secret access to default compute SA`);
+      }
+    } catch (err) {
+      console.warn('Failed to set secret IAM (VM may not access config):', err.message);
+    }
+  }
+
+  // Also grant access to shared secrets
+  for (const sharedName of ['agents-plane-api-key', 'agents-plane-sa-key']) {
+    try {
+      const sharedPath = `${parent}/secrets/${sharedName}`;
+      const [policy] = await secretManager.getIamPolicy({ resource: sharedPath });
+      // Skip if already bound (idempotent)
+    } catch (err) {
+      // Shared secrets may not exist yet, that's fine
+    }
+  }
+
   // Startup script lives in GCS — single source of truth
   const startupScriptUrl = 'gs://agents-plane-scripts/startup-script.sh';
 

@@ -51,7 +51,7 @@ fetch_secret() {
 }
 
 CONFIG=$(fetch_secret "agent-${AGENT_NAME}-config")
-if [ -z "$CONFIG" ] || echo "$CONFIG" | jq empty 2>/dev/null; [ $? -ne 0 ]; then
+if [ -z "$CONFIG" ] || ! echo "$CONFIG" | jq empty 2>/dev/null; then
   logger "🤖 Agents Plane: ERROR — failed to fetch agent config secret"
   exit 1
 fi
