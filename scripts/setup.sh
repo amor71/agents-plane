@@ -552,6 +552,10 @@ echo ""
 read -rp "  Press Enter once you've completed the delegation... " _
 
 # Verify delegation actually works by requesting a token
+# Use ADMIN_EMAIL if already set (resume), otherwise use current gcloud account
+if [[ -z "${ADMIN_EMAIL:-}" ]]; then
+  ADMIN_EMAIL="$CURRENT_ACCOUNT"
+fi
 step "Verifying delegation..."
 VERIFY_RESULT=$(python3 - "$KEY_FILE" "$ADMIN_EMAIL" <<'PYEOF'
 import json, sys, time, urllib.request, urllib.error, urllib.parse, base64
