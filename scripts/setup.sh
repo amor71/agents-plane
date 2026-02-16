@@ -705,73 +705,84 @@ header "⚙️  Step 7 · Configure Your Agents Plane"
 PLANE_NAME="$PROJECT_ID"
 success "Plane name: $PLANE_NAME (from GCP project)"
 
-echo ""
-echo -e "  ${BOLD}Available regions:${NC}"
-echo ""
-i=1
-declare -a REGION_CODES=()
-for region_entry in "${REGIONS[@]}"; do
-  code="${region_entry%%|*}"
-  label="${region_entry##*|}"
-  REGION_CODES+=("$code")
-  marker=""
-  [[ "$code" == "us-east4" ]] && marker=" ${GREEN}← recommended${NC}"
-  printf "    ${CYAN}%d${NC}  %-22s ${DIM}%s${NC}%b\n" "$i" "$code" "$label" "$marker"
-  ((i++))
-done
-echo ""
-read -rp "  Select region [1]: " region_choice
-region_choice="${region_choice:-1}"
-idx=$((region_choice - 1))
-REGION="${REGION_CODES[$idx]:-us-east4}"
-success "Region: $REGION"
+# Detect region from existing resources or default config
+EXISTING_REGION=$(gcloud compute instances list --project="$PROJECT_ID" --format="value(zone)" --limit=1 2>/dev/null | sed 's/-[a-z]$//' || true)
+if [[ -n "$EXISTING_REGION" ]]; then
+  REGION="$EXISTING_REGION"
+  success "Region: $REGION (detected from existing resources)"
+else
+  echo ""
+  echo -e "  ${BOLD}Available regions:${NC}"
+  echo ""
+  i=1
+  declare -a REGION_CODES=()
+  for region_entry in "${REGIONS[@]}"; do
+    code="${region_entry%%|*}"
+    label="${region_entry##*|}"
+    REGION_CODES+=("$code")
+    marker=""
+    [[ "$code" == "us-east4" ]] && marker=" ${GREEN}← recommended${NC}"
+    printf "    ${CYAN}%d${NC}  %-22s ${DIM}%s${NC}%b\n" "$i" "$code" "$label" "$marker"
+    ((i++))
+  done
+  echo ""
+  read -rp "  Select region [1]: " region_choice
+  region_choice="${region_choice:-1}"
+  idx=$((region_choice - 1))
+  REGION="${REGION_CODES[$idx]:-us-east4}"
+  success "Region: $REGION"
+fi
 
 echo ""
 prompt_default "Default VM type" "e2-standard-2" VM_TYPE
 prompt_default "Default AI model" "claude-opus-4-6" DEFAULT_MODEL
 prompt_default "Admin email (for impersonation)" "$CURRENT_ACCOUNT" ADMIN_EMAIL
 
-echo ""
-echo -e "  ${BOLD}Shared API Key${NC} ${DIM}(used by all agents in this plane)${NC}"
-echo ""
+# Shared API Key
+API_KEY_SECRET_NAME="agents-plane-api-key"
 api_provider_default="anthropic"
 [[ "$DEFAULT_MODEL" == *"gpt"* ]] && api_provider_default="openai"
-prompt_default "API provider" "$api_provider_default" API_PROVIDER
 
-echo -e "  ${DIM}The API key will be stored in GCP Secret Manager.${NC}"
-read -rsp "  API key: " SHARED_API_KEY
-echo ""
+if gcloud secrets describe "$API_KEY_SECRET_NAME" --project="$PROJECT_ID" &>/dev/null; then
+  success "Shared API key already exists in Secret Manager"
+  prompt_default "API provider" "$api_provider_default" API_PROVIDER
+else
+  echo ""
+  echo -e "  ${BOLD}Shared API Key${NC} ${DIM}(used by all agents in this plane)${NC}"
+  echo ""
+  prompt_default "API provider" "$api_provider_default" API_PROVIDER
 
-# Store shared API key in Secret Manager
-API_KEY_SECRET_NAME="agents-plane-api-key"
-if ! gcloud secrets describe "$API_KEY_SECRET_NAME" --project="$PROJECT_ID" &>/dev/null; then
+  echo -e "  ${DIM}The API key will be stored in GCP Secret Manager.${NC}"
+  read -rsp "  API key: " SHARED_API_KEY
+  echo ""
+
   echo "$SHARED_API_KEY" | gcloud secrets create "$API_KEY_SECRET_NAME" \
     --project="$PROJECT_ID" --replication-policy="automatic" --data-file=- 2>/dev/null
-else
-  echo "$SHARED_API_KEY" | gcloud secrets versions add "$API_KEY_SECRET_NAME" \
-    --project="$PROJECT_ID" --data-file=- 2>/dev/null
+  success "API key stored in Secret Manager"
 fi
-success "API key stored in Secret Manager"
 
-echo ""
-echo -e "  ${BOLD}Email (SMTP)${NC} ${DIM}(for sending welcome emails + QR codes to users)${NC}"
-echo ""
-prompt_default "SMTP host" "smtp.gmail.com" SMTP_HOST
-prompt_default "SMTP user (email)" "$ADMIN_EMAIL" SMTP_USER
-prompt_default "From address" "$ADMIN_EMAIL" SMTP_FROM
-read -rsp "  SMTP password (App Password for Gmail): " SMTP_PASS
-echo ""
-
-# Store SMTP password in Secret Manager
+# Email (SMTP)
 SMTP_PASS_SECRET_NAME="agents-plane-smtp-pass"
-if ! gcloud secrets describe "$SMTP_PASS_SECRET_NAME" --project="$PROJECT_ID" &>/dev/null; then
+
+if gcloud secrets describe "$SMTP_PASS_SECRET_NAME" --project="$PROJECT_ID" &>/dev/null; then
+  success "SMTP config already exists in Secret Manager"
+  prompt_default "SMTP host" "smtp.gmail.com" SMTP_HOST
+  prompt_default "SMTP user (email)" "$ADMIN_EMAIL" SMTP_USER
+  prompt_default "From address" "$ADMIN_EMAIL" SMTP_FROM
+else
+  echo ""
+  echo -e "  ${BOLD}Email (SMTP)${NC} ${DIM}(for sending welcome emails + QR codes to users)${NC}"
+  echo ""
+  prompt_default "SMTP host" "smtp.gmail.com" SMTP_HOST
+  prompt_default "SMTP user (email)" "$ADMIN_EMAIL" SMTP_USER
+  prompt_default "From address" "$ADMIN_EMAIL" SMTP_FROM
+  read -rsp "  SMTP password (App Password for Gmail): " SMTP_PASS
+  echo ""
+
   echo "$SMTP_PASS" | gcloud secrets create "$SMTP_PASS_SECRET_NAME" \
     --project="$PROJECT_ID" --replication-policy="automatic" --data-file=- 2>/dev/null
-else
-  echo "$SMTP_PASS" | gcloud secrets versions add "$SMTP_PASS_SECRET_NAME" \
-    --project="$PROJECT_ID" --data-file=- 2>/dev/null
+  success "SMTP password stored in Secret Manager"
 fi
-success "SMTP password stored in Secret Manager"
 save_step 7
 fi  # end Step 7 skip
 
