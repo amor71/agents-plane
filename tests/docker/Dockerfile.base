@@ -1,0 +1,11 @@
+FROM debian:12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates jq git sudo openssl python3 python3-cryptography \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g openclaw \
+    && HIMALAYA_VERSION="v1.1.0" \
+    && curl -sL "https://github.com/pimalaya/himalaya/releases/download/${HIMALAYA_VERSION}/himalaya.x86_64-linux.tgz" | tar xz -C /usr/local/bin/ \
+    && chmod +x /usr/local/bin/himalaya \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd -m -s /bin/bash agent
