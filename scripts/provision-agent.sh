@@ -409,6 +409,14 @@ cat > /home/agent/.openclaw/openclaw.json << OCJSON
         "identity": { "name": "Agent" }
       }
     ]
+  },
+  "channels": {
+    "whatsapp": {
+      "dmPolicy": "allowlist",
+      "selfChatMode": true,
+      "allowFrom": [],
+      "mediaMaxMb": 50
+    }
   }
 }
 OCJSON
@@ -528,34 +536,31 @@ systemctl start openclaw-gateway
 # Wait for gateway to be ready
 sleep 10
 
-# Set up WhatsApp channel and email QR code to user
-if command -v openclaw &>/dev/null && [ -n "$SMTP_HOST" ] && [ "$SMTP_HOST" != "null" ]; then
-  # Generate WhatsApp QR code
-  su - agent -c 'openclaw channel add whatsapp --qr-file /tmp/whatsapp-qr.png' 2>/dev/null || true
-  
-  # Email the QR code to the user
-  if [ -f /tmp/whatsapp-qr.png ] && command -v himalaya &>/dev/null; then
-    su - agent -c "cat << 'WELCOME_EMAIL' | himalaya template send
+# Send welcome email with connection instructions
+if [ -n "$SMTP_HOST" ] && [ "$SMTP_HOST" != "null" ] && command -v himalaya &>/dev/null; then
+  su - agent -c "cat << WELCOME_EMAIL | himalaya template send
 From: ${SMTP_FROM}
 To: ${OWNER_EMAIL}
-Subject: Your AI Agent is Live! 🤖 — Scan to Connect
+Subject: Your AI Agent is Live! 🤖
 
 Hi!
 
-Your AI agent has been provisioned and is running.
+Your AI agent has been provisioned and is running on model: ${AGENT_MODEL}
 
 To connect via WhatsApp:
-1. Open the attached QR code image
-2. Open WhatsApp on your phone → Settings → Linked Devices → Link a Device
-3. Scan the QR code
+1. Ask your admin to run: gcloud compute ssh agent-${AGENT_NAME} --tunnel-through-iap -- sudo -u agent openclaw channels login
+2. A QR code will appear in the terminal
+3. Open WhatsApp on your phone → Settings → Linked Devices → Link a Device
+4. Scan the QR code
+5. Start chatting!
 
-Once connected, just send a message and your agent will respond!
+Or your admin can configure another channel (Telegram, Discord, etc).
 
-Your agent is running model: ${AGENT_MODEL}
+Once connected, just send a message — your agent is ready to help with coding, research, writing, analysis, and automation.
+
+Welcome aboard! 🤖
 WELCOME_EMAIL" 2>/dev/null || true
-    # TODO: attach QR image (himalaya MML attachment support)
-    logger "Welcome email sent to ${OWNER_EMAIL}"
-  fi
+  logger "Welcome email sent to ${OWNER_EMAIL}"
 fi
 
 # Signal completion
