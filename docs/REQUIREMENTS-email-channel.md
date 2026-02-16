@@ -1,87 +1,87 @@
-# Requirements: Agent ↔ User Email Channel
+# Requirements: Agent ↔ User Communication
 
 ## Problem
-Agents can send welcome emails but cannot receive replies. Without two-way communication, agents are useless — they can't onboard users, receive API keys, or take instructions.
+Agents can send welcome emails but have no two-way communication channel with their user. Without this, agents are useless.
 
 ## Goal
-Every provisioned agent has a fully functional email channel with its user from the moment it boots. The user's only interaction is through their regular email — no SSH, no CLI, no dashboards.
+Every provisioned agent has a fully functional real-time communication channel with its user. Email is the bootstrap medium (one-way welcome), then the user connects via a native OpenClaw channel (Telegram, WhatsApp, etc.) for ongoing two-way chat.
 
 ## User Flow
-1. Agent VM boots → sends welcome email to user's Workspace email
-2. User replies to the email (with API key, questions, instructions, etc.)
-3. Agent reads the reply, processes it, and responds via email
-4. Ongoing: user emails agent, agent emails back — like texting
+1. Agent VM boots → sends **welcome email** with instructions to connect via chat
+2. User clicks link / scans QR → connects to agent on Telegram or WhatsApp
+3. Agent introduces itself, onboards user (name, vibe, API key)
+4. Ongoing: user chats with agent in real-time — like texting a friend
+5. Agent is proactive — sends updates, reminders, insights without being asked
 
 ## Requirements
 
-### R1: Gmail API Read Access
-- Service account must have `https://www.googleapis.com/auth/gmail.readonly` scope via domain-wide delegation (in addition to existing `gmail.send`)
-- Startup script must configure the agent to check inbox
+### R1: Welcome Email (One-Way Bootstrap)
+- Agent sends welcome email via Gmail API (already works)
+- Email contains:
+  - Warm introduction
+  - Clear instructions to connect via chat (Telegram link or WhatsApp QR)
+  - Why chat is better: "real-time, mobile, like texting — way better than email back-and-forth"
+- This is the ONLY use of email — everything else happens over chat
 
-### R2: Inbox Monitoring
-- Agent checks inbox on every heartbeat (default ~30 min)
-- Reads unread messages from the agent's owner (identified by `OWNER_EMAIL` from config)
-- Marks processed messages as read
-- Supports plain text and HTML email bodies
+### R2: Telegram as Primary Channel
+- Telegram is the easiest to set up programmatically:
+  - Create bot via BotFather (can be automated or pre-provisioned)
+  - User just clicks a `t.me/BotName` link and hits Start
+  - No QR scanning, no browser needed on VM
+- Each agent gets its own Telegram bot (or shared bot with routing)
+- OpenClaw natively supports Telegram — zero custom code for messaging
 
-### R3: API Key Onboarding
-- When agent detects a message containing an API key pattern (`sk-ant-*`):
-  - Validates the key (test API call to Anthropic)
-  - If valid: stores in GCP Secret Manager as `agent-{name}-api-key` (NOT locally on disk)
-  - Updates gateway config to pull key from Secret Manager on startup
-  - Restarts gateway
-  - Sends confirmation email
-  - Deletes the original email containing the key (security)
-- If invalid: replies asking user to double-check
-- **Keys must never be stored in local files** — always in Secret Manager. The `auth-profiles.json` should reference Secret Manager, not contain raw keys.
+### R3: WhatsApp as Alternative Channel
+- WhatsApp requires QR pairing (needs terminal/browser access)
+- Offer as upgrade path for users who prefer WhatsApp
+- Agent guides user through the process when ready
+- Lower priority than Telegram for initial setup
 
-### R4: General Email Communication
-- All non-key emails are fed to the agent as user messages
-- Agent replies via email
-- This is the agent's primary (and initially only) communication channel
-- Agent should be conversational — not robotic auto-replies
+### R4: API Key Onboarding (Over Chat)
+- Once connected via Telegram/WhatsApp, agent asks for API key
+- User sends key in chat
+- Agent validates (test API call)
+- If valid: stores in GCP Secret Manager as `agent-{name}-api-key` (NOT locally)
+- Restarts gateway with new key
+- Confirms and deletes the message containing the key
+- **Keys must never be stored in local files** — always in Secret Manager
 
-### R5: Email Channel in OpenClaw Config
-- Configure OpenClaw gateway with email as a channel
-- Heartbeat triggers inbox check
-- Agent responses route back through email
+### R5: Proactive Agent Behavior
+- Once bootstrapped (channel connected, API key set), agent is proactive
+- Checks user's calendar, emails, relevant data on heartbeat
+- Sends unprompted messages when something matters
+- Develops personality and relationship with user over time
+- Real assistant — not a chatbot waiting to be poked
 
 ### R6: Startup Script Changes
-- Add `gmail.readonly` scope to domain-wide delegation docs/setup
-- Install `gmail_read.py` helper alongside existing `gmail.py`
-- Write OpenClaw config that enables email-based heartbeat checking
-- BOOTSTRAP.md instructions tell agent to check email on every heartbeat
+- Pre-configure OpenClaw gateway with Telegram channel
+- Either: pre-create Telegram bot per agent, or include bot creation in bootstrap
+- Write BOOTSTRAP.md that tells agent to send welcome email with Telegram connect link
+- HEARTBEAT.md for proactive behavior after bootstrap
 
-### R7: Proactive Agent Behavior
-- Once bootstrapped (API key set, email channel working), the agent should be proactive — not just reactive
-- Agent checks user's calendar, emails, and relevant data on heartbeat
-- Sends unprompted emails when something matters: upcoming meetings, urgent emails, reminders, insights
-- Agent develops its own personality and relationship with the user over time (per BOOTSTRAP.md flow)
-- The agent is a real assistant — not a chatbot waiting to be poked
+### R7: Channel Upgrade Path
+- Agent naturally promotes additional channels once user is comfortable
+- WhatsApp, Discord, Signal — whatever the user prefers
+- Agent guides step-by-step through connecting each one
+- Multiple channels can coexist — OpenClaw handles routing
 
-### R8: Channel Upgrade — Promote Chat
-- Email is the bootstrap channel, not the endgame
-- Once the agent has a working relationship with the user, it should proactively explain other channels:
-  - **WhatsApp** — real-time, mobile, like texting a friend
-  - **Telegram** — fast, rich formatting, bot-friendly
-  - **Discord** — if user prefers it
-- Agent guides the user step-by-step through connecting a chat channel:
-  - WhatsApp: "I'll show you a QR code — scan it with WhatsApp and we're connected"
-  - Telegram: "Search for @YourBotName on Telegram and hit Start"
-- Timing matters — don't push this on first contact. Wait until:
-  - API key is set up
-  - User has had a few email exchanges
-  - Agent feels the user is comfortable
-- Once chat is connected, email becomes secondary (notifications, long-form, fallback)
-- Agent should frame it naturally: "Hey, email works but I can be way more responsive on WhatsApp — want to set that up? Takes 30 seconds."
+## Architecture
+```
+Welcome Email (Gmail API, one-way)
+  → User clicks Telegram link
+    → OpenClaw Telegram channel (native, real-time, two-way)
+      → All communication happens here
+```
 
 ## Non-Requirements (for now)
-- Real-time email (push notifications / pub-sub) — polling on heartbeat is fine
-- Multiple email threads — single thread per user is fine
+- Email as a two-way channel — email is bootstrap only
+- Real-time email polling — not needed
 - Attachments — text only for now
+- Custom email handling code — leverage OpenClaw native channels
 
 ## Success Criteria
-- User receives welcome email ✅ (already works)
-- User replies with API key → agent swaps key, confirms via email
-- User sends "what can you do?" → agent replies helpfully via email
+- User receives welcome email with Telegram connect link
+- User clicks link → connected to agent in Telegram
+- Agent onboards user (name, vibe, API key) via chat
+- Agent is proactive — sends first unprompted message within 24h
 - All of this happens without admin intervention
