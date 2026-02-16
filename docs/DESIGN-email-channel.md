@@ -1,256 +1,278 @@
-# Design: Agent ↔ User Email Channel
+# Design: Agent ↔ User Communication via WhatsApp
 
 ## Architecture Overview
 
 ```
-User (Gmail)  ←→  Gmail API (REST)  ←→  Agent VM (OpenClaw)
-                      ↑
-              Service Account (JWT)
-              Domain-Wide Delegation
-              Scopes: gmail.send + gmail.readonly + gmail.modify
+┌─────────────────────────────────────────────────────────────────┐
+│                        PROVISIONING                              │
+│                                                                  │
+│  setup.sh → Cloud Function → VM boots → startup-script.sh       │
+│    → installs OpenClaw, configures WhatsApp channel              │
+│    → starts gateway (WhatsApp NOT YET LINKED)                    │
+│    → agent boots, sends welcome email with WhatsApp instructions │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                      QR PAIRING FLOW                             │
+│                                                                  │
+│  Agent:  starts `openclaw channels login --channel whatsapp`     │
+│          captures QR as terminal text / base64 image             │
+│          emails QR to user                                       │
+│                                                                  │
+│  User:   opens email on phone                                    │
+│          opens WhatsApp → Linked Devices → Link a Device         │
+│          scans QR from email                                     │
+│                                                                  │
+│  Agent:  detects link → sends first WhatsApp message             │
+│          begins onboarding conversation                          │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                     ONGOING COMMUNICATION                        │
+│                                                                  │
+│  User ←→ WhatsApp ←→ OpenClaw Gateway ←→ Agent (Claude)         │
+│                                                                  │
+│  Native OpenClaw channel — real-time, two-way, zero custom code  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-The agent uses the existing service account with domain-wide delegation to both send AND read the user's Gmail. No new infrastructure — just expanded scopes and a smarter `gmail.py`.
+## The Phone Number Problem
 
-## Components
+WhatsApp Web (Baileys) is a **linked device** — it piggybacks on an existing WhatsApp account. It doesn't create a new number. So:
 
-### 1. Gmail Helper (`gmail.py`) — Enhanced
+**Option A: Agent uses the USER's WhatsApp (linked device)**
+- The user scans a QR → their WhatsApp is now linked to the agent VM
+- Agent reads/sends messages AS the user
+- Problem: agent sees ALL the user's WhatsApp messages, not just ones to the agent
+- Problem: agent sends messages FROM the user's number
+- This is how OpenClaw already works for personal use — NOT suitable for org-provisioned agents
 
-Extend the existing `gmail.py` with:
+**Option B: Dedicated WhatsApp number per agent**
+- Org provides a pool of phone numbers (SIMs, virtual numbers, or VoIP)
+- Each agent gets its own number with its own WhatsApp account
+- User adds the agent's number as a contact and chats with it
+- Clean separation — agent has its own identity
+- Challenge: acquiring and managing phone numbers at scale
 
-| Function | Purpose |
-|----------|---------|
-| `send(from, to, subject, body)` | Send email (already exists) |
-| `inbox(email, query, max)` | List messages matching query |
-| `read(email, msg_id)` | Get full message body (plain text) |
-| `mark_read(email, msg_id)` | Remove UNREAD label |
-| `delete(email, msg_id)` | Permanently delete (for key emails) |
-| `reply(email, msg_id, body)` | Reply to a thread (preserves threading) |
+**Option C: WhatsApp Business API (Cloud API)**
+- Official API from Meta — no QR, no Baileys, no linked devices
+- Virtual phone numbers, API-based messaging
+- $0.005-0.08 per conversation (24h window)
+- Requires Meta Business verification
+- Most scalable, most professional, but most setup overhead
 
-All functions use the same JWT/SA auth flow. The `gmail.modify` scope covers both `gmail.send` and label modifications (mark as read), and `gmail.readonly` covers reading.
+**Recommendation: Option B for MVP, Option C for scale**
 
-**Simplified scope:** Use `https://mail.google.com/` (full access) since we need send + read + modify + delete. This is a single scope vs managing 4 separate ones.
+For the current test (3 agents), Option B works — buy 3 prepaid SIMs or use virtual numbers (e.g., TextNow, Google Voice). Each agent registers WhatsApp on its number, then the user just messages that number.
 
-### 2. Email Polling (Heartbeat-Based)
+For production at scale, Option C (WhatsApp Business API) eliminates all the QR/SIM complexity.
 
-On every heartbeat, the agent runs a check-email flow:
+## Detailed Flow
 
-```
-Heartbeat fires
-  → Agent reads HEARTBEAT.md
-  → HEARTBEAT.md says: check email
-  → Agent runs: python3 gmail.py inbox <owner_email> --unread
-  → For each unread message:
-      → Read full body
-      → If contains API key pattern → R3 key onboarding flow
-      → Otherwise → feed to agent as user message
-      → Agent generates response
-      → Agent sends reply via gmail.py
-      → Mark original as read
-```
+### Phase 0: Provisioning (startup-script.sh)
 
-This is identical to how Rye checks email on heartbeat — no new mechanism needed.
+Changes to startup script:
 
-### 3. API Key Onboarding Flow
-
-```
-User sends email with sk-ant-api03-... key
-  → Agent extracts key (regex: sk-ant-[a-zA-Z0-9_-]+)
-  → Validates: curl -s https://api.anthropic.com/v1/messages with test payload
-  → If valid:
-      → Store in Secret Manager: agent-{name}-api-key
-      → Write fetch-key-on-boot script that pulls from SM at startup
-      → Restart gateway
-      → Send confirmation email
-      → Delete the email containing the key (gmail.py delete)
-  → If invalid:
-      → Reply: "That key didn't work — double check and resend?"
+1. **Pre-configure WhatsApp channel** in `openclaw.json`:
+```json
+{
+  "channels": {
+    "whatsapp": {
+      "dmPolicy": "allowlist",
+      "allowFrom": ["<OWNER_PHONE_NUMBER>"],
+      "sendReadReceipts": true,
+      "ackReaction": {
+        "emoji": "👀",
+        "direct": true
+      }
+    }
+  }
+}
 ```
 
-**Secret Manager storage:**
-- Secret name: `agent-{name}-api-key`
-- Agent's VM service account already has `secretmanager.secretAccessor` role
-- On gateway restart, startup script pulls key from SM → writes ephemeral auth-profiles.json
-- Key never persists on disk between restarts
+2. **Store agent's WhatsApp phone number** in config:
+   - `agent-{name}-config` secret gets a `whatsappNumber` field
+   - Startup script reads it and configures
 
-**Key fetch on boot** — modify the systemd service `ExecStartPre` to:
-```bash
-ExecStartPre=/usr/local/bin/fetch-agent-key.sh
+3. **Write BOOTSTRAP.md** with WhatsApp pairing instructions
+
+**New config secret schema:**
+```json
+{
+  "user": "allison@nine30.com",
+  "userPhone": "+15551234567",
+  "model": "claude-opus-4-6",
+  "budget": 50,
+  "whatsappNumber": "+15559876543"
+}
 ```
 
-`fetch-agent-key.sh`:
-```bash
-#!/bin/bash
-# Fetch API key from Secret Manager at boot, write ephemeral auth-profiles.json
-TOKEN=$(curl -s -H "Metadata-Flavor: Google" \
-  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
-  | jq -r '.access_token')
-PROJECT_ID=$(curl -s -H "Metadata-Flavor: Google" \
-  "http://metadata.google.internal/computeMetadata/v1/project/project-id")
-INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" \
-  "http://metadata.google.internal/computeMetadata/v1/instance/name")
-AGENT_NAME="${INSTANCE_NAME#agent-}"
+### Phase 1: Welcome Email + QR Pairing
 
-# Try per-agent key first, fall back to shared
-API_KEY=$(curl -s "https://secretmanager.googleapis.com/v1/projects/${PROJECT_ID}/secrets/agent-${AGENT_NAME}-api-key/versions/latest:access" \
-  -H "Authorization: Bearer ${TOKEN}" | jq -r '.payload.data // empty' | base64 -d 2>/dev/null)
+When the agent first boots and runs BOOTSTRAP.md:
 
-if [ -z "$API_KEY" ]; then
-  API_KEY=$(curl -s "https://secretmanager.googleapis.com/v1/projects/${PROJECT_ID}/secrets/agents-plane-api-key/versions/latest:access" \
-    -H "Authorization: Bearer ${TOKEN}" | jq -r '.payload.data // empty' | base64 -d 2>/dev/null)
-fi
+1. **Send welcome email** via `gmail.py`:
+   - Subject: "Your AI assistant is ready! 🤖"
+   - Body explains:
+     - What the agent can do
+     - How to connect via WhatsApp
+     - "Save this number: +1 (555) 987-6543 — that's me on WhatsApp"
+     - "Message me there to get started!"
 
-if [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ]; then
-  AGENT_HOME="/home/${AGENT_NAME}"
-  # Detect provider from existing config
-  MODEL=$(jq -r '.agents.list[0].model // "anthropic/claude-opus-4-6"' "$AGENT_HOME/.openclaw/openclaw.json")
-  PROVIDER="${MODEL%%/*}"
+2. **If using linked-device model (Option A):**
+   - Agent starts WhatsApp pairing
+   - Captures QR output (terminal text or base64)
+   - Emails QR image to user
+   - User scans → linked
+   - ⚠️ QR expires in ~60s — agent must detect failure and regenerate
 
-  jq -n --arg provider "$PROVIDER" --arg key "$API_KEY" \
-    '{version:1, profiles:{("\($provider):default"):{type:"token",provider:$provider,token:$key}}, lastGood:{($provider):"\($provider):default"}}' \
-    > "$AGENT_HOME/.openclaw/agents/main/agent/auth-profiles.json"
-  chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.openclaw/agents/main/agent/auth-profiles.json"
-fi
+3. **If using dedicated-number model (Option B):**
+   - WhatsApp is already registered on the agent's number during provisioning
+   - No QR needed from the user
+   - User just sends a message to the agent's WhatsApp number
+   - Agent receives it via OpenClaw → responds
+
+### Phase 2: Onboarding Conversation (Over WhatsApp)
+
+Agent-driven, conversational, NOT a checklist dump:
+
+```
+Agent: "Hey! 👋 I'm your new AI assistant. We're connected on WhatsApp now — 
+        this is how we'll talk from now on. What should I call you?"
+
+User:  "I'm Allison"
+
+Agent: "Nice to meet you, Allison! A couple things to get you set up:
+        
+        First — what vibe do you want from me? I can be:
+        • Casual & friendly (like texting a smart friend)
+        • Professional & concise (just the facts)
+        • Somewhere in between
+        
+        What feels right?"
+
+User:  "Casual is good"
+
+Agent: "Love it. OK one important setup thing — right now I'm on a shared 
+        API key from your org. For privacy (so our conversations stay between 
+        us), you'll want your own. Takes 2 minutes:
+        
+        1. Go to console.anthropic.com/settings/keys
+        2. Create a new key (copy it)
+        3. Send it to me right here
+        
+        I'll configure it and delete the message immediately. 🔒"
+
+User:  "sk-ant-api03-..."
+
+Agent: [validates key]
+       [stores in Secret Manager as agent-allison-api-key]
+       [restarts gateway — pulls new key via ExecStartPre]
+       [deletes user's message containing the key]
+       
+       "All set! You're on your own key now. Our conversations are private. 🔐
+        
+        So tell me about your work — what do you do and how can I help?"
 ```
 
-### 4. Secret Manager Key Storage (from agent)
+### Phase 3: API Key Storage (Secret Manager)
 
-The agent needs to write to Secret Manager when receiving a key via email. Python helper `store_key.py`:
+**On receiving key from user:**
 
 ```python
-#!/usr/bin/env python3
-"""Store an API key in GCP Secret Manager."""
-import json, sys, urllib.request
-
-def get_token():
-    req = urllib.request.Request(
-        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-        headers={"Metadata-Flavor": "Google"})
-    return json.loads(urllib.request.urlopen(req).read())["access_token"]
-
-def get_project():
-    req = urllib.request.Request(
-        "http://metadata.google.internal/computeMetadata/v1/project/project-id",
-        headers={"Metadata-Flavor": "Google"})
-    return urllib.request.urlopen(req).read().decode()
-
-def get_agent_name():
-    req = urllib.request.Request(
-        "http://metadata.google.internal/computeMetadata/v1/instance/name",
-        headers={"Metadata-Flavor": "Google"})
-    name = urllib.request.urlopen(req).read().decode()
-    return name.replace("agent-", "", 1)
-
-def store_key(api_key):
-    token = get_token()
-    project = get_project()
-    agent = get_agent_name()
-    secret_name = f"agent-{agent}-api-key"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-    # Create secret (ignore if exists)
-    try:
-        req = urllib.request.Request(
-            f"https://secretmanager.googleapis.com/v1/projects/{project}/secrets",
-            data=json.dumps({"secretId": secret_name, "replication": {"automatic": {}}}).encode(),
-            headers=headers)
-        urllib.request.urlopen(req)
-    except urllib.error.HTTPError as e:
-        if e.code != 409:  # 409 = already exists
-            raise
-
-    # Add version
-    import base64
-    payload = base64.b64encode(api_key.encode()).decode()
-    req = urllib.request.Request(
-        f"https://secretmanager.googleapis.com/v1/projects/{project}/secrets/{secret_name}:addVersion",
-        data=json.dumps({"payload": {"data": payload}}).encode(),
-        headers=headers)
-    resp = json.loads(urllib.request.urlopen(req).read())
-    print(f"Key stored as {secret_name} (version: {resp['name'].split('/')[-1]})")
-
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: store_key.py <api-key>")
-        sys.exit(1)
-    store_key(sys.argv[1])
+# Agent runs via exec tool:
+python3 ~/.config/agents-plane/store_key.py <api-key>
 ```
 
-**IAM requirement:** The VM's service account needs `secretmanager.secretVersionManager` role (or `secretmanager.admin`) on the project to create secrets and add versions.
+`store_key.py` (installed by startup script):
+- Creates `agent-{name}-api-key` secret in GCP Secret Manager
+- Adds version with the key value
+- Uses VM metadata token for auth (no local credentials needed)
 
-### 5. HEARTBEAT.md Template
+**On gateway restart:**
 
-Written by startup script, tells the agent what to check:
+`fetch-agent-key.sh` runs as `ExecStartPre`:
+- Checks `agent-{name}-api-key` in Secret Manager (per-agent key)
+- Falls back to `agents-plane-api-key` (shared key)
+- Writes ephemeral `auth-profiles.json` (overwritten every boot)
+- Key never persists on disk between restarts
+
+**systemd service update:**
+```ini
+[Service]
+ExecStartPre=/usr/local/bin/fetch-agent-key.sh
+ExecStart=...
+```
+
+### Phase 4: Proactive Behavior
+
+Once bootstrapped, the agent's HEARTBEAT.md drives proactive behavior:
 
 ```markdown
 # HEARTBEAT.md
 
-## Email Check (every heartbeat)
-- Run: python3 ~/.config/agents-plane/gmail.py inbox <owner_email> --unread
-- Process each unread message:
-  - If it contains an API key (sk-ant-*): run key onboarding
-  - Otherwise: read it, respond via email
-- Mark all processed messages as read
+## Proactive Checks (every heartbeat)
+- If BOOTSTRAP.md still exists → continue onboarding
+- Check if user has messaged since last heartbeat → respond if needed
+- Check user's calendar (if available) for upcoming events
+- Check for anything interesting to share
 
-## Key Onboarding
-If user sends an API key:
-1. Validate: test call to Anthropic API
-2. Store: python3 ~/.config/agents-plane/store_key.py <key>
-3. Restart: sudo systemctl restart openclaw-gateway
-4. Confirm via email
-5. Delete the email with the key
-
-## Proactive (after bootstrap complete)
-- Check user's recent emails for anything urgent
-- Check calendar if available
-- Send daily briefing if there's something worth sharing
+## Engagement Rules
+- Morning: send brief check-in if there's something worth sharing
+- Don't spam — quality over quantity
+- If user hasn't responded in 24h+, gentle check-in
+- Learn what they care about, surface relevant info
+- Adapt tone and frequency based on their responses
 ```
 
-### 6. Domain-Wide Delegation Scope Update
+The agent writes to its own `memory/` files, builds `SOUL.md` and `USER.md`, and becomes more useful over time — exactly like how Rye works.
 
-In `setup.sh`, update the delegation scopes documentation/instructions:
+### Phase 5: Channel Upgrade Path
 
-Current: `https://www.googleapis.com/auth/gmail.send`
-New: `https://mail.google.com/` (full Gmail access — covers send, read, modify, delete)
-
-This is a one-time change in Google Workspace Admin Console → Security → API Controls → Domain-wide delegation.
-
-### 7. Startup Script Changes
-
-1. **Replace step 10** (write auth-profiles.json directly) with `fetch-agent-key.sh`
-2. **Add `fetch-agent-key.sh`** to `/usr/local/bin/` — runs at gateway boot
-3. **Add `store_key.py`** to `~/.config/agents-plane/` — used by agent to save keys
-4. **Add `ExecStartPre`** to systemd service — fetches key before gateway starts
-5. **Write HEARTBEAT.md** with email check instructions
-6. **Update BOOTSTRAP.md** — remove local key storage instructions, use Secret Manager flow
-
-### 8. Permissions
-
-The VM service account needs:
-- `roles/secretmanager.secretAccessor` — read secrets (already have this)
-- `roles/secretmanager.secretVersionManager` — create secrets + add versions (NEW)
-
-Grant in `setup.sh`:
-```bash
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:$COMPUTE_SA" \
-  --role="roles/secretmanager.secretVersionManager"
-```
+After a week or so of WhatsApp use, agent can suggest:
+- "Hey, I can also work on Telegram/Discord/Signal if you prefer"
+- Guides through setup of additional channels
+- Multiple channels coexist — OpenClaw routes automatically
 
 ## File Changes Summary
 
 | File | Change |
 |------|--------|
-| `startup-script.sh` | Add fetch-agent-key.sh, store_key.py, HEARTBEAT.md, ExecStartPre |
-| `gmail.py` | Add read, mark_read, delete, reply functions |
-| `setup.sh` | Update scope docs, add secretVersionManager role |
-| `BOOTSTRAP.md` template | Use Secret Manager for key storage |
-| NEW: `fetch-agent-key.sh` | ExecStartPre — pull key from SM on boot |
-| NEW: `store_key.py` | Agent writes key to SM |
+| `startup-script.sh` | Add WhatsApp channel config, fetch-agent-key.sh, store_key.py, HEARTBEAT.md |
+| `setup.sh` | Accept whatsappNumber in agent config, add secretVersionManager IAM |
+| `openclaw.json` template | Add channels.whatsapp block |
+| `BOOTSTRAP.md` template | Full onboarding journey with WhatsApp pairing + personality + key |
+| NEW: `fetch-agent-key.sh` | ExecStartPre — pull key from SM on every boot |
+| NEW: `store_key.py` | Agent writes key to SM when user sends it |
+| Cloud Function `index.js` | Accept whatsappNumber + userPhone in provision request |
+
+## IAM Changes
+
+| Principal | Role | Purpose |
+|-----------|------|---------|
+| Compute SA | `secretmanager.secretVersionManager` | Agent creates/writes per-agent key secrets |
+| Compute SA | `secretmanager.secretAccessor` | Agent reads keys (already have this) |
+
+## Open Questions
+
+1. **Phone number acquisition**: How to get dedicated WhatsApp numbers for agents?
+   - Prepaid SIMs (manual, doesn't scale)
+   - Virtual numbers (TextNow, Google Voice — may not work with WhatsApp)
+   - WhatsApp Business API (scalable, no SIM needed, but setup overhead)
+   
+2. **WhatsApp registration on headless VM**: Even with a dedicated number, initial WhatsApp registration needs SMS verification. Options:
+   - Register on a phone first, then link the VM as a device
+   - Use WhatsApp Business API (no registration needed)
+   
+3. **QR expiry handling**: If using QR-based linking, need retry mechanism when QR expires before user scans
+
+4. **User phone number**: Where does `userPhone` come from? Admin console custom field? Asked during provisioning?
 
 ## Security Notes
 
-- API keys **never** persist on disk — `auth-profiles.json` is written by `ExecStartPre` and could be tmpfs-mounted for extra safety
+- API keys **never** persist on disk — written by ExecStartPre, overwritten every boot
 - Email containing key is deleted immediately after processing
-- SA key file on disk is the only persistent credential — same as current design
-- Per-agent secrets in SM are only accessible by the project's compute SA (scoped by IAM)
+- WhatsApp message containing key is deleted immediately
+- SA key file is the only persistent credential on disk
+- Per-agent secrets in SM are scoped by IAM
+- WhatsApp channel uses `allowlist` policy — only the owner can message the agent
