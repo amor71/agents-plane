@@ -333,8 +333,7 @@ apt-get install -y -qq nodejs
 # Install OpenClaw
 npm install -g openclaw
 
-# Install himalaya (email CLI) for agent communication
-curl -fsSL https://github.com/pimalaya/himalaya/releases/latest/download/himalaya-x86_64-linux-gnu.tar.gz | tar xz -C /usr/local/bin/ 2>/dev/null || true
+# Email handled by send-email.py (Gmail API + SA delegation) — no external deps needed
 
 # Create agent user
 useradd -m -s /bin/bash agent || true
@@ -483,7 +482,7 @@ BSTRAP
 cat > /home/agent/send-email.py << 'EMAILPY'
 #!/usr/bin/env python3
 """Send email via Gmail API using workspace-admin SA with domain-wide delegation."""
-import json, sys, base64, urllib.request, urllib.error, time, hmac, hashlib
+import json, sys, base64, urllib.request, urllib.error, urllib.parse, time, hmac, hashlib
 
 def b64url(data):
     if isinstance(data, str):
@@ -492,8 +491,6 @@ def b64url(data):
 
 def get_delegated_token(key_file, impersonate_email):
     """Get OAuth2 token via JWT with domain-wide delegation."""
-    import struct
-    
     with open(key_file) as f:
         sa = json.load(f)
     
@@ -535,7 +532,6 @@ def get_delegated_token(key_file, impersonate_email):
 
 def send_gmail(to, subject, body, from_addr, key_file):
     """Send email via Gmail API with delegated auth."""
-    import urllib.parse
     from email.mime.text import MIMEText
     token = get_delegated_token(key_file, from_addr)
     
