@@ -691,9 +691,73 @@ if [ "$READY" = false ]; then
   logger "🤖 Agents Plane: Warning — gateway not ready after 60s, continuing anyway"
 fi
 
-# ─── 20. Bootstrap message ───────────────────────────────────────
+# ─── 20. QR monitor service (emails QR instantly, no LLM delay) ──
+cat > /etc/systemd/system/qr-monitor.service << QRMEOF
+[Unit]
+Description=WhatsApp QR Monitor ($AGENT_NAME)
+After=openclaw-gateway.service
+Requires=openclaw-gateway.service
+
+[Service]
+Type=simple
+User=$AGENT_NAME
+ExecStart=/bin/bash $AGENT_HOME/.config/agents-plane/qr_monitor.sh $AGENT_NAME $OWNER_EMAIL
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+QRMEOF
+
+# Write the monitor script
+cat > "$AGENT_HOME/.config/agents-plane/qr_monitor.sh" << 'QRMONEOF'
+#!/bin/bash
+# Watches session transcripts for QR base64 data, emails instantly
+set -uo pipefail
+AGENT_NAME="${1:-$(whoami)}"
+AGENT_HOME="$(eval echo ~$AGENT_NAME)"
+OWNER_EMAIL="${2:-${AGENT_NAME}@nine30.com}"
+SEND_QR="$AGENT_HOME/.config/agents-plane/send_qr.py"
+SESSION_DIR="$AGENT_HOME/.openclaw/agents/main/sessions"
+LAST_QR_HASH=""
+
+echo "[qr-monitor] Starting for $AGENT_NAME ($OWNER_EMAIL)"
+echo "[qr-monitor] Watching $SESSION_DIR for QR codes..."
+
+while true; do
+    TRANSCRIPT=$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -1)
+    if [ -z "$TRANSCRIPT" ]; then sleep 2; continue; fi
+    QR_DATA=$(grep -o 'data:image/png;base64,[A-Za-z0-9+/=]\{100,\}' "$TRANSCRIPT" 2>/dev/null | tail -1)
+    if [ -n "$QR_DATA" ]; then
+        QR_HASH=$(echo "$QR_DATA" | md5sum | cut -d' ' -f1)
+        if [ "$QR_HASH" != "$LAST_QR_HASH" ]; then
+            echo "[qr-monitor] $(date +%H:%M:%S) New QR detected!"
+            B64=$(echo "$QR_DATA" | sed 's|data:image/png;base64,||')
+            echo "$B64" | python3 "$SEND_QR" "$OWNER_EMAIL" -
+            if [ $? -eq 0 ]; then
+                echo "[qr-monitor] $(date +%H:%M:%S) ✅ QR emailed"
+                LAST_QR_HASH="$QR_HASH"
+            else
+                echo "[qr-monitor] $(date +%H:%M:%S) ❌ Email failed"
+            fi
+        fi
+    fi
+    sleep 2
+done
+QRMONEOF
+chmod +x "$AGENT_HOME/.config/agents-plane/qr_monitor.sh"
+chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.config/agents-plane/qr_monitor.sh"
+
+systemctl daemon-reload
+systemctl enable qr-monitor
+systemctl start qr-monitor
+logger "🤖 Agents Plane: QR monitor started"
+
+# ─── 21. Bootstrap message ───────────────────────────────────────
 echo "Agent will bootstrap on first heartbeat (reads BOOTSTRAP.md)"
 
-# ─── 21. Signal completion ───────────────────────────────────────
+# ─── 22. Signal completion ───────────────────────────────────────
 echo "AGENT_READY" > /tmp/agent-status
 logger "🤖 Agents Plane: Agent $AGENT_NAME is ALIVE (owner: $OWNER_EMAIL, model: $AGENT_MODEL)"
