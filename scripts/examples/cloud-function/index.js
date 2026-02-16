@@ -480,6 +480,37 @@ su - agent -c "XDG_RUNTIME_DIR=/run/user/\$(id -u agent) systemctl --user daemon
 su - agent -c "XDG_RUNTIME_DIR=/run/user/\$(id -u agent) systemctl --user enable openclaw-gateway"
 su - agent -c "XDG_RUNTIME_DIR=/run/user/\$(id -u agent) systemctl --user start openclaw-gateway"
 
+# Wait for gateway to be ready
+sleep 10
+
+# --- 13. Create bootstrap cron job via gateway API ---
+# Heartbeat needs a prior session to deliver to, but this is a fresh agent.
+# Use a one-shot cron job to trigger the first agent session.
+BOOTSTRAP_TIME=$(date -u -d "+2 minutes" +%Y-%m-%dT%H:%M:%SZ)
+
+python3 -c "
+import json, urllib.request
+job = {
+    'action': 'add',
+    'job': {
+        'name': 'Bootstrap',
+        'schedule': {'kind': 'at', 'at': '\$BOOTSTRAP_TIME'},
+        'sessionTarget': 'isolated',
+        'payload': {
+            'kind': 'agentTurn',
+            'message': 'You just came online for the first time. Read your workspace files (AGENTS.md, BOOTSTRAP.md) and follow the bootstrap instructions. Send a welcome email to your owner \$OWNER_EMAIL using: python3 /home/agent/.config/agents-plane/gmail.py send \$OWNER_EMAIL \$OWNER_EMAIL \"Hello from your new AI assistant\" \"Hi! I am your new AI assistant. I can help with email, research, writing, coding, and analysis. Reply to this email to get started!\"'
+        }
+    }
+}
+req = urllib.request.Request(
+    'http://127.0.0.1:18789/api/cron',
+    data=json.dumps(job).encode(),
+    headers={'Authorization': 'Bearer \$GATEWAY_TOKEN', 'Content-Type': 'application/json'}
+)
+resp = urllib.request.urlopen(req)
+print(resp.read().decode())
+" 2>&1 && logger "🤖 Agents Plane: Bootstrap cron job created" || logger "🤖 Agents Plane: Warning — could not create bootstrap cron job"
+
 logger "🤖 Agents Plane: Gateway started for \$AGENT_NAME — agent is ALIVE"
 `;
 
