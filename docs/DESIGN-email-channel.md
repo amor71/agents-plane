@@ -17,30 +17,44 @@ The agent links as a **device on the user's own WhatsApp** — same model OpenCl
 `openclaw channels login --channel whatsapp` generates a QR code on the terminal. Agent VMs are headless — no screen. QR must reach the user somehow.
 
 ### The Solution
-Agent captures QR → renders as image → emails to user → user scans with phone.
+Two-step flow: welcome email first (no QR), then QR on demand when user is ready.
 
 ```
 Agent VM boots
   → Gateway starts (WhatsApp NOT linked yet)
   → Agent runs BOOTSTRAP.md
-  → Starts WhatsApp pairing, captures QR string
-  → Renders QR as PNG image (using qrcode library or python3-qrcode)
-  → Emails QR image to user via gmail.py
-  → Email subject: "Scan this QR to connect with your AI assistant"
-  → Email body explains:
-    - "Open WhatsApp → Settings → Linked Devices → Link a Device"
-    - "Scan the QR code below"
-    - "⚠️ This code expires in 60 seconds — scan it right away!"
-    - "If you miss it, I'll send a new one automatically."
-  → Agent waits for connection event
-  → If no connection after 90 seconds:
-    - Generate new QR
-    - Send new email: "Here's a fresh QR code — the last one expired"
-    - Repeat up to 5 times (total ~8 minutes of attempts)
-  → If still no connection:
-    - Send final email: "No worries — whenever you're ready, just reply to 
-      this email with 'connect' and I'll send a fresh QR code"
-    - Agent enters waiting mode, checks email on heartbeat for "connect" trigger
+  → Sends welcome email (NO QR yet):
+    Subject: "Your AI assistant is ready! 🤖"
+    Body:
+      - Warm intro: what the agent is, what it can do
+      - Explains WhatsApp connection process
+      - "When you're ready to connect, reply to this email with 'connect'"
+      - "I'll immediately send you a QR code to scan with WhatsApp"
+      - "⚠️ The QR code is only valid for 60 seconds, so have your 
+         phone ready with WhatsApp open before you reply!"
+      - Step-by-step preview:
+        1. Reply "connect" to this email
+        2. Open WhatsApp → Settings → Linked Devices → Link a Device
+        3. Scan the QR code from the email I'll send you (within 60 seconds!)
+  → Agent enters waiting mode
+
+User replies "connect"
+  → Agent detects reply on heartbeat (checks inbox via gmail.py)
+  → Immediately generates QR + starts WhatsApp pairing
+  → Emails QR as image:
+    Subject: "⚡ Scan this QR NOW — expires in 60 seconds!"
+    Body: QR image + short instructions
+  → Waits for connection
+
+If QR expires (no connection after 90 seconds):
+  → Agent does NOT spam with new QRs
+  → On next heartbeat, if still not connected:
+    - Sends email: "Looks like the QR expired. No worries — reply 'connect' 
+      again when you're ready and I'll send a fresh one."
+  → Cycle repeats until connected
+
+If user replies "connect" again:
+  → Fresh QR generated and emailed immediately
 ```
 
 ### QR Capture Implementation
@@ -332,16 +346,14 @@ The agent drives this conversation over WhatsApp after QR pairing succeeds:
 
 ## Bootstrap Check
 - If BOOTSTRAP.md exists and WhatsApp NOT linked:
-  - Check if QR email was sent. If not, start pairing + email QR.
-  - If QR was sent but expired (>90s, no connection), regenerate and re-email.
-  - Track attempts in /tmp/qr-attempts.json
+  - If welcome email not sent yet → send it (no QR, just intro + instructions)
+  - Check inbox for "connect" reply from owner
+  - If "connect" found → generate QR → email QR image → wait for connection
+  - If QR was sent but connection failed → send "expired, reply connect again" email
+  - Track state in /tmp/bootstrap-state.json
 - If BOOTSTRAP.md exists and WhatsApp IS linked:
-  - Continue onboarding conversation
-- If no BOOTSTRAP.md: normal operation
-
-## Email Check (bootstrap only)
-- If waiting for "connect" trigger email, check inbox via gmail.py
-- On "connect" reply → regenerate QR and email it
+  - Continue onboarding conversation (personality, key, etc.)
+- If no BOOTSTRAP.md → normal operation
 
 ## Proactive (post-bootstrap)
 - Check what's relevant to user and surface it
@@ -350,23 +362,27 @@ The agent drives this conversation over WhatsApp after QR pairing succeeds:
 - If user quiet >24h, gentle check-in
 ```
 
-## Retry Logic for QR Expiry
+## QR Flow — User-Initiated, No Spam
 
 ```
-Attempt 1: Generate QR → email → wait 90s
-  ↓ no connection
-Attempt 2: Generate QR → email "Fresh code!" → wait 90s  
-  ↓ no connection
-Attempt 3: Generate QR → email → wait 90s
-  ↓ no connection
-Attempt 4: Generate QR → email → wait 90s
-  ↓ no connection
-Attempt 5: Generate QR → email → wait 90s
-  ↓ no connection
-Final: Email "No rush — reply 'connect' whenever you're ready and I'll send a new code"
-  → Agent checks email on heartbeat for "connect" trigger
-  → On trigger: restart QR flow
+Welcome email (no QR) → explains process, asks user to reply "connect"
+  ↓
+User replies "connect"
+  → Agent generates QR → emails immediately
+  → Waits for WhatsApp connection
+  ↓
+Connected? → 🎉 Start onboarding over WhatsApp
+  ↓
+Not connected (QR expired)?
+  → Next heartbeat: "QR expired — reply 'connect' again when ready"
+  → Wait for user reply
+  ↓
+User replies "connect" again
+  → Fresh QR → repeat
 ```
+
+No auto-retry spam. User controls the pace. QR is only generated when user is actively waiting.
+
 
 ## Startup Script Changes
 
