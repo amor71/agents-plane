@@ -59,11 +59,26 @@ Every provisioned agent has a fully functional email channel with its user from 
 - Agent develops its own personality and relationship with the user over time (per BOOTSTRAP.md flow)
 - The agent is a real assistant — not a chatbot waiting to be poked
 
+### R8: Channel Upgrade — Promote Chat
+- Email is the bootstrap channel, not the endgame
+- Once the agent has a working relationship with the user, it should proactively explain other channels:
+  - **WhatsApp** — real-time, mobile, like texting a friend
+  - **Telegram** — fast, rich formatting, bot-friendly
+  - **Discord** — if user prefers it
+- Agent guides the user step-by-step through connecting a chat channel:
+  - WhatsApp: "I'll show you a QR code — scan it with WhatsApp and we're connected"
+  - Telegram: "Search for @YourBotName on Telegram and hit Start"
+- Timing matters — don't push this on first contact. Wait until:
+  - API key is set up
+  - User has had a few email exchanges
+  - Agent feels the user is comfortable
+- Once chat is connected, email becomes secondary (notifications, long-form, fallback)
+- Agent should frame it naturally: "Hey, email works but I can be way more responsive on WhatsApp — want to set that up? Takes 30 seconds."
+
 ## Non-Requirements (for now)
 - Real-time email (push notifications / pub-sub) — polling on heartbeat is fine
 - Multiple email threads — single thread per user is fine
 - Attachments — text only for now
-- WhatsApp/Telegram — email first, other channels later
 
 ## Success Criteria
 - User receives welcome email ✅ (already works)
