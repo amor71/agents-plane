@@ -273,13 +273,10 @@ else
     read -rp "  API key: " API_KEY
   fi
 
-  # Get SMTP config from plane config for welcome email
-  local SMTP_HOST=$(jq -r '.email.smtp_host // ""' "$CONFIG_FILE")
-  local SMTP_USER=$(jq -r '.email.smtp_user // ""' "$CONFIG_FILE")
-  local SMTP_PASS_SECRET=$(jq -r '.email.smtp_pass_secret // ""' "$CONFIG_FILE")
-  local SMTP_FROM=$(jq -r '.email.from // ""' "$CONFIG_FILE")
+  # Get email config from plane config
+  local EMAIL_FROM=$(jq -r '.email.from // ""' "$CONFIG_FILE")
 
-  echo "{\"user\": \"$EMAIL\", \"model\": \"$MODEL\", \"budget\": $BUDGET, \"api_provider\": \"$API_PROVIDER\", \"api_key\": \"$API_KEY\", \"smtp_host\": \"$SMTP_HOST\", \"smtp_user\": \"$SMTP_USER\", \"smtp_pass_secret\": \"$SMTP_PASS_SECRET\", \"smtp_from\": \"$SMTP_FROM\"}" | \
+  echo "{\"user\": \"$EMAIL\", \"model\": \"$MODEL\", \"budget\": $BUDGET, \"api_provider\": \"$API_PROVIDER\", \"api_key\": \"$API_KEY\", \"email_from\": \"$EMAIL_FROM\"}" | \
       gcloud secrets create "$SECRET_NAME" \
         --project="$PROJECT_ID" \
         --replication-policy="automatic" \
@@ -292,15 +289,8 @@ else
       --role="roles/secretmanager.secretAccessor" \
       --quiet 2>/dev/null || true
     
-    # Grant agent SA access to shared SMTP password (for welcome email)
-    local SMTP_SECRET=$(jq -r '.email.smtp_pass_secret // ""' "$CONFIG_FILE")
-    if [[ -n "$SMTP_SECRET" && "$SMTP_SECRET" != "null" ]]; then
-      gcloud secrets add-iam-policy-binding "$SMTP_SECRET" \
-        --project="$PROJECT_ID" \
-        --member="serviceAccount:$AGENT_SA_EMAIL" \
-        --role="roles/secretmanager.secretAccessor" \
-        --quiet 2>/dev/null || true
-    fi
+    # Agent SA sends email via Gmail API (domain-wide delegation on workspace-admin SA)
+    # No additional secret access needed for email
   fi
   success "Secret created and bound"
 fi
@@ -479,40 +469,47 @@ Delete this file when you're done — you won't need it again.
 Good luck out there. Make it count.
 BSTRAP
 
-# Configure himalaya for outbound email (welcome email + QR code)
-SMTP_HOST=$(echo "$CONFIG" | jq -r '.smtp_host // ""')
-SMTP_USER=$(echo "$CONFIG" | jq -r '.smtp_user // ""')
-SMTP_FROM=$(echo "$CONFIG" | jq -r '.smtp_from // ""')
-SMTP_PASS_SECRET=$(echo "$CONFIG" | jq -r '.smtp_pass_secret // ""')
+# Set up email sending via Gmail API (using service account with domain-wide delegation)
+# The VM's service account can impersonate the admin to send via Gmail API
+cat > /home/agent/send-email.py << 'EMAILPY'
+#!/usr/bin/env python3
+"""Send email via Gmail API using service account with domain-wide delegation."""
+import json, sys, base64, urllib.request, urllib.error, time, hashlib, hmac
 
-if [ -n "$SMTP_HOST" ] && [ "$SMTP_HOST" != "null" ]; then
-  # Fetch SMTP password from Secret Manager
-  SMTP_PASS=""
-  if [ -n "$SMTP_PASS_SECRET" ] && [ "$SMTP_PASS_SECRET" != "null" ]; then
-    SMTP_PASS=$(curl -s "https://secretmanager.googleapis.com/v1/projects/${PROJECT}/secrets/${SMTP_PASS_SECRET}/versions/latest:access" \
-      -H "Authorization: Bearer ${TOKEN}" | jq -r '.payload.data' | base64 -d 2>/dev/null || echo "")
-  fi
-  
-  mkdir -p /home/agent/.config/himalaya
-  cat > /home/agent/.config/himalaya/config.toml << HIMCFG
-[accounts.default]
-email = "${SMTP_FROM}"
-display-name = "AI Agent"
-default = true
+def get_access_token():
+    """Get OAuth2 token from metadata server."""
+    url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+    req = urllib.request.Request(url, headers={"Metadata-Flavor": "Google"})
+    resp = json.loads(urllib.request.urlopen(req).read())
+    return resp["access_token"]
 
-backend.type = "none"
+def send_gmail(to, subject, body, from_addr):
+    """Send email via Gmail API."""
+    token = get_access_token()
+    
+    # Build RFC 2822 message
+    msg = f"From: {from_addr}\r\nTo: {to}\r\nSubject: {subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}"
+    raw = base64.urlsafe_b64encode(msg.encode()).decode()
+    
+    data = json.dumps({"raw": raw}).encode()
+    # Use 'me' as userId — the SA impersonates the from_addr user
+    url = f"https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+    req = urllib.request.Request(url, data=data, headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }, method="POST")
+    
+    try:
+        resp = urllib.request.urlopen(req)
+        print(f"Email sent to {to}")
+    except urllib.error.HTTPError as e:
+        print(f"Gmail API error: {e.code} {e.read().decode()}")
 
-message.send.backend.type = "smtp"
-message.send.backend.host = "${SMTP_HOST}"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "${SMTP_USER}"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.raw = "${SMTP_PASS}"
-HIMCFG
-  chown -R agent:agent /home/agent/.config/himalaya
-  chmod 600 /home/agent/.config/himalaya/config.toml
-fi
+if __name__ == "__main__":
+    send_gmail(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+EMAILPY
+chmod +x /home/agent/send-email.py
+chown agent:agent /home/agent/send-email.py
 
 chown -R agent:agent /home/agent/.openclaw
 
@@ -543,14 +540,13 @@ systemctl start openclaw-gateway
 # Wait for gateway to be ready
 sleep 10
 
-# Send welcome email with connection instructions
-if [ -n "$SMTP_HOST" ] && [ "$SMTP_HOST" != "null" ] && command -v himalaya &>/dev/null; then
-  su - agent -c "cat << WELCOME_EMAIL | himalaya template send
-From: ${SMTP_FROM}
-To: ${OWNER_EMAIL}
-Subject: Your AI Agent is Live! 🤖
-
-Hi!
+# Send welcome email via Gmail API
+ADMIN_FROM=$(echo "$CONFIG" | jq -r '.email_from // .user // ""')
+if [ -n "$ADMIN_FROM" ] && [ "$ADMIN_FROM" != "null" ]; then
+  python3 /home/agent/send-email.py \
+    "${OWNER_EMAIL}" \
+    "Your AI Agent is Live! 🤖" \
+    "Hi!
 
 Your AI agent has been provisioned and is running on model: ${AGENT_MODEL}
 
@@ -565,8 +561,8 @@ Or your admin can configure another channel (Telegram, Discord, etc).
 
 Once connected, just send a message — your agent is ready to help with coding, research, writing, analysis, and automation.
 
-Welcome aboard! 🤖
-WELCOME_EMAIL" 2>/dev/null || true
+Welcome aboard! 🤖" \
+    "${ADMIN_FROM}" 2>/dev/null || true
   logger "Welcome email sent to ${OWNER_EMAIL}"
 fi
 

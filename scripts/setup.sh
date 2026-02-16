@@ -761,28 +761,10 @@ else
   success "API key stored in Secret Manager"
 fi
 
-# Email (SMTP)
-SMTP_PASS_SECRET_NAME="agents-plane-smtp-pass"
-
-if gcloud secrets describe "$SMTP_PASS_SECRET_NAME" --project="$PROJECT_ID" &>/dev/null; then
-  success "SMTP config already exists in Secret Manager"
-  prompt_default "SMTP host" "smtp.gmail.com" SMTP_HOST
-  prompt_default "SMTP user (email)" "$ADMIN_EMAIL" SMTP_USER
-  prompt_default "From address" "$ADMIN_EMAIL" SMTP_FROM
-else
-  echo ""
-  echo -e "  ${BOLD}Email (SMTP)${NC} ${DIM}(for sending welcome emails + QR codes to users)${NC}"
-  echo ""
-  prompt_default "SMTP host" "smtp.gmail.com" SMTP_HOST
-  prompt_default "SMTP user (email)" "$ADMIN_EMAIL" SMTP_USER
-  prompt_default "From address" "$ADMIN_EMAIL" SMTP_FROM
-  read -rsp "  SMTP password (App Password for Gmail): " SMTP_PASS
-  echo ""
-
-  echo "$SMTP_PASS" | gcloud secrets create "$SMTP_PASS_SECRET_NAME" \
-    --project="$PROJECT_ID" --replication-policy="automatic" --data-file=- 2>/dev/null
-  success "SMTP password stored in Secret Manager"
-fi
+# Email — uses Gmail API via service account (domain-wide delegation)
+# No SMTP passwords needed — the workspace-admin SA already has gmail.send scope
+SMTP_FROM="$ADMIN_EMAIL"
+success "Email: will use Gmail API via service account (${ADMIN_EMAIL})"
 save_step 7
 fi  # end Step 7 skip
 
@@ -824,9 +806,7 @@ cat > "$CONFIG_FILE" << EOF
     "firewall_tag": "agent-vm"
   },
   "email": {
-    "smtp_host": "$SMTP_HOST",
-    "smtp_user": "$SMTP_USER",
-    "smtp_pass_secret": "$SMTP_PASS_SECRET_NAME",
+    "method": "gmail-api",
     "from": "$SMTP_FROM"
   }
 }
