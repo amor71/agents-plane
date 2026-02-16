@@ -176,6 +176,62 @@ STOREEOF
 chmod +x "$AGENT_HOME/.config/agents-plane/store_key.py"
 chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.config/agents-plane/store_key.py"
 
+# ─── 10b. Write send_qr.py (atomic QR email delivery) ───────────
+cat > "$AGENT_HOME/.config/agents-plane/send_qr.py" << 'SENDQREOF'
+#!/usr/bin/env python3
+"""Atomic WhatsApp QR email delivery. Takes base64 PNG, emails immediately."""
+import sys, os, base64, time, subprocess, re
+
+def email_qr(owner_email, qr_png_path):
+    gmail_py = os.path.expanduser("~/.config/agents-plane/gmail.py")
+    html = (
+        "<h2>⚡ Scan this QR code with WhatsApp NOW</h2>"
+        "<p><b>Open WhatsApp → Settings → Linked Devices → Link a Device</b></p>"
+        "<p><img src='cid:qrcode' width='300'/></p>"
+        "<p>⚠️ This code expires in about 60 seconds! Scan it immediately.</p>"
+        "<p>If it expired, just reply <b>connect</b> again and I'll send a fresh one.</p>"
+    )
+    result = subprocess.run([
+        "python3", gmail_py, "send_html",
+        owner_email, owner_email,
+        "⚡ Scan this QR NOW — 60 seconds!",
+        html,
+        f"qrcode:{qr_png_path}"
+    ], capture_output=True, text=True, timeout=15)
+    if result.returncode != 0:
+        print(f"Email error: {result.stderr}", file=sys.stderr)
+    return result.returncode == 0
+
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: python3 send_qr.py <owner_email> <base64_png_data>", file=sys.stderr)
+        print("   OR: echo <data> | python3 send_qr.py <owner_email> -", file=sys.stderr)
+        sys.exit(1)
+    owner_email = sys.argv[1]
+    b64_data = sys.stdin.read().strip() if sys.argv[2] == "-" else sys.argv[2]
+    b64_data = re.sub(r'^data:image/png;base64,', '', b64_data)
+    qr_path = "/tmp/whatsapp-qr.png"
+    try:
+        png_bytes = base64.b64decode(b64_data)
+        with open(qr_path, 'wb') as f:
+            f.write(png_bytes)
+        print(f"[{time.strftime('%H:%M:%S')}] QR image saved ({len(png_bytes)} bytes)")
+    except Exception as e:
+        print(f"ERROR decoding base64: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(f"[{time.strftime('%H:%M:%S')}] Emailing QR to {owner_email}...")
+    if email_qr(owner_email, qr_path):
+        print(f"[{time.strftime('%H:%M:%S')}] ✅ QR emailed successfully!")
+    else:
+        print(f"[{time.strftime('%H:%M:%S')}] ❌ Email failed", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+SENDQREOF
+chmod +x "$AGENT_HOME/.config/agents-plane/send_qr.py"
+chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.config/agents-plane/send_qr.py"
+
 # ─── 11. Write gateway config ────────────────────────────────────
 GATEWAY_TOKEN=$(openssl rand -hex 32)
 cat > "$AGENT_HOME/.openclaw/openclaw.json" << CFGEOF
@@ -488,12 +544,14 @@ python3 ~/.config/agents-plane/gmail.py inbox ${OWNER_EMAIL} 5 "is:unread subjec
 
 When you find a reply containing "connect":
 1. Mark it as read
-2. Start WhatsApp pairing: run \`openclaw channels login --channel whatsapp\` (this generates a QR code in the terminal)
-3. The QR code is a string — render it as an image using: \`python3 -c "import qrcode; qrcode.make('QR_STRING').save('/tmp/whatsapp-qr.png')"\`
-4. Email the QR image to your owner:
+2. Call the \`whatsapp_login\` tool — it returns a QR as a data:image/png;base64 string
+3. **IMMEDIATELY** (same tool call sequence, no thinking) extract the base64 data and pipe it to send_qr.py:
 \`\`\`bash
-python3 ~/.config/agents-plane/gmail.py send_html ${OWNER_EMAIL} ${OWNER_EMAIL} "⚡ Scan this QR NOW — 60 seconds!" "<h2>Scan this QR code with WhatsApp</h2><p><b>Open WhatsApp → Settings → Linked Devices → Link a Device</b></p><p><img src='cid:qrcode' width='300'/></p><p>⚠️ This code expires in about 60 seconds!</p>" qrcode:/tmp/whatsapp-qr.png
+echo "BASE64_DATA_HERE" | python3 ~/.config/agents-plane/send_qr.py ${OWNER_EMAIL} -
 \`\`\`
+   Replace BASE64_DATA_HERE with the full base64 string from the whatsapp_login response (strip the \`data:image/png;base64,\` prefix first).
+
+⚠️ **CRITICAL: The QR expires in ~60 seconds.** You MUST call send_qr.py in your very next tool call after whatsapp_login. Do NOT think, plan, or explain — just extract the base64 and pipe it to the script immediately.
 
 ## Step 3: Confirm WhatsApp Connection
 
