@@ -733,6 +733,48 @@ echo ""
 prompt_default "Default VM type" "e2-standard-2" VM_TYPE
 prompt_default "Default AI model" "claude-opus-4-6" DEFAULT_MODEL
 prompt_default "Admin email (for impersonation)" "$CURRENT_ACCOUNT" ADMIN_EMAIL
+
+echo ""
+echo -e "  ${BOLD}Shared API Key${NC} ${DIM}(used by all agents in this plane)${NC}"
+echo ""
+local api_provider_default="anthropic"
+[[ "$DEFAULT_MODEL" == *"gpt"* ]] && api_provider_default="openai"
+prompt_default "API provider" "$api_provider_default" API_PROVIDER
+
+echo -e "  ${DIM}The API key will be stored in GCP Secret Manager.${NC}"
+read -rsp "  API key: " SHARED_API_KEY
+echo ""
+
+# Store shared API key in Secret Manager
+API_KEY_SECRET_NAME="agents-plane-api-key"
+if ! gcloud secrets describe "$API_KEY_SECRET_NAME" --project="$PROJECT_ID" &>/dev/null; then
+  echo "$SHARED_API_KEY" | gcloud secrets create "$API_KEY_SECRET_NAME" \
+    --project="$PROJECT_ID" --replication-policy="automatic" --data-file=- 2>/dev/null
+else
+  echo "$SHARED_API_KEY" | gcloud secrets versions add "$API_KEY_SECRET_NAME" \
+    --project="$PROJECT_ID" --data-file=- 2>/dev/null
+fi
+success "API key stored in Secret Manager"
+
+echo ""
+echo -e "  ${BOLD}Email (SMTP)${NC} ${DIM}(for sending welcome emails + QR codes to users)${NC}"
+echo ""
+prompt_default "SMTP host" "smtp.gmail.com" SMTP_HOST
+prompt_default "SMTP user (email)" "$ADMIN_EMAIL" SMTP_USER
+prompt_default "From address" "$ADMIN_EMAIL" SMTP_FROM
+read -rsp "  SMTP password (App Password for Gmail): " SMTP_PASS
+echo ""
+
+# Store SMTP password in Secret Manager
+SMTP_PASS_SECRET_NAME="agents-plane-smtp-pass"
+if ! gcloud secrets describe "$SMTP_PASS_SECRET_NAME" --project="$PROJECT_ID" &>/dev/null; then
+  echo "$SMTP_PASS" | gcloud secrets create "$SMTP_PASS_SECRET_NAME" \
+    --project="$PROJECT_ID" --replication-policy="automatic" --data-file=- 2>/dev/null
+else
+  echo "$SMTP_PASS" | gcloud secrets versions add "$SMTP_PASS_SECRET_NAME" \
+    --project="$PROJECT_ID" --data-file=- 2>/dev/null
+fi
+success "SMTP password stored in Secret Manager"
 save_step 7
 fi  # end Step 7 skip
 
@@ -767,9 +809,17 @@ cat > "$CONFIG_FILE" << EOF
   },
   "agents": {
     "default_model": "$DEFAULT_MODEL",
+    "api_provider": "$API_PROVIDER",
+    "api_key_secret": "$API_KEY_SECRET_NAME",
     "network": "agents-plane-vpc",
     "subnet": "agents-subnet",
     "firewall_tag": "agent-vm"
+  },
+  "email": {
+    "smtp_host": "$SMTP_HOST",
+    "smtp_user": "$SMTP_USER",
+    "smtp_pass_secret": "$SMTP_PASS_SECRET_NAME",
+    "from": "$SMTP_FROM"
   }
 }
 EOF

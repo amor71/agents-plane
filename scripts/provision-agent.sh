@@ -257,37 +257,50 @@ if gcloud secrets describe "$SECRET_NAME" --project="$PROJECT_ID" &>/dev/null; t
 else
   step "Creating secret '$SECRET_NAME'..."
   if ! $DRY_RUN; then
-    # Prompt for API key
-  echo ""
-  echo -e "  ${BOLD}The agent needs an AI provider API key to function.${NC}"
-  echo -e "  ${DIM}This will be stored securely in GCP Secret Manager.${NC}"
-  echo ""
-  local API_PROVIDER=""
+    # Use shared plane API key from config
+  local API_PROVIDER=$(jq -r '.agents.api_provider // "anthropic"' "$CONFIG_FILE")
+  local API_KEY_SECRET=$(jq -r '.agents.api_key_secret // ""' "$CONFIG_FILE")
+  
+  # Fetch shared API key from Secret Manager
   local API_KEY=""
-  if [[ "$MODEL" == *"claude"* ]] || [[ "$MODEL" == *"opus"* ]] || [[ "$MODEL" == *"sonnet"* ]]; then
-    API_PROVIDER="anthropic"
-    read -rp "  Anthropic API key: " API_KEY
-  elif [[ "$MODEL" == *"gpt"* ]] || [[ "$MODEL" == *"openai"* ]]; then
-    API_PROVIDER="openai"
-    read -rp "  OpenAI API key: " API_KEY
-  else
-    read -rp "  API provider (anthropic/openai/google): " API_PROVIDER
+  if [[ -n "$API_KEY_SECRET" ]]; then
+    API_KEY=$(gcloud secrets versions access latest --secret="$API_KEY_SECRET" --project="$PROJECT_ID" 2>/dev/null || echo "")
+  fi
+  
+  if [[ -z "$API_KEY" ]]; then
+    warn "No shared API key found in plane config"
+    echo -e "  ${BOLD}Enter the AI provider API key for this agent:${NC}"
     read -rp "  API key: " API_KEY
   fi
-  echo ""
 
-  echo "{\"user\": \"$EMAIL\", \"model\": \"$MODEL\", \"budget\": $BUDGET, \"api_provider\": \"$API_PROVIDER\", \"api_key\": \"$API_KEY\"}" | \
+  # Get SMTP config from plane config for welcome email
+  local SMTP_HOST=$(jq -r '.email.smtp_host // ""' "$CONFIG_FILE")
+  local SMTP_USER=$(jq -r '.email.smtp_user // ""' "$CONFIG_FILE")
+  local SMTP_PASS_SECRET=$(jq -r '.email.smtp_pass_secret // ""' "$CONFIG_FILE")
+  local SMTP_FROM=$(jq -r '.email.from // ""' "$CONFIG_FILE")
+
+  echo "{\"user\": \"$EMAIL\", \"model\": \"$MODEL\", \"budget\": $BUDGET, \"api_provider\": \"$API_PROVIDER\", \"api_key\": \"$API_KEY\", \"smtp_host\": \"$SMTP_HOST\", \"smtp_user\": \"$SMTP_USER\", \"smtp_pass_secret\": \"$SMTP_PASS_SECRET\", \"smtp_from\": \"$SMTP_FROM\"}" | \
       gcloud secrets create "$SECRET_NAME" \
         --project="$PROJECT_ID" \
         --replication-policy="automatic" \
         --data-file=- 2>/dev/null || die "Failed to create secret"
 
-    # Grant agent SA access
+    # Grant agent SA access to its own secret
     gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
       --project="$PROJECT_ID" \
       --member="serviceAccount:$AGENT_SA_EMAIL" \
       --role="roles/secretmanager.secretAccessor" \
       --quiet 2>/dev/null || true
+    
+    # Grant agent SA access to shared SMTP password (for welcome email)
+    local SMTP_SECRET=$(jq -r '.email.smtp_pass_secret // ""' "$CONFIG_FILE")
+    if [[ -n "$SMTP_SECRET" && "$SMTP_SECRET" != "null" ]]; then
+      gcloud secrets add-iam-policy-binding "$SMTP_SECRET" \
+        --project="$PROJECT_ID" \
+        --member="serviceAccount:$AGENT_SA_EMAIL" \
+        --role="roles/secretmanager.secretAccessor" \
+        --quiet 2>/dev/null || true
+    fi
   fi
   success "Secret created and bound"
 fi
@@ -451,6 +464,41 @@ Delete this file when you're done — you won't need it again.
 Good luck out there. Make it count.
 BSTRAP
 
+# Configure himalaya for outbound email (welcome email + QR code)
+SMTP_HOST=$(echo "$CONFIG" | jq -r '.smtp_host // ""')
+SMTP_USER=$(echo "$CONFIG" | jq -r '.smtp_user // ""')
+SMTP_FROM=$(echo "$CONFIG" | jq -r '.smtp_from // ""')
+SMTP_PASS_SECRET=$(echo "$CONFIG" | jq -r '.smtp_pass_secret // ""')
+
+if [ -n "$SMTP_HOST" ] && [ "$SMTP_HOST" != "null" ]; then
+  # Fetch SMTP password from Secret Manager
+  SMTP_PASS=""
+  if [ -n "$SMTP_PASS_SECRET" ] && [ "$SMTP_PASS_SECRET" != "null" ]; then
+    SMTP_PASS=$(curl -s "https://secretmanager.googleapis.com/v1/projects/${PROJECT}/secrets/${SMTP_PASS_SECRET}/versions/latest:access" \
+      -H "Authorization: Bearer ${TOKEN}" | jq -r '.payload.data' | base64 -d 2>/dev/null || echo "")
+  fi
+  
+  mkdir -p /home/agent/.config/himalaya
+  cat > /home/agent/.config/himalaya/config.toml << HIMCFG
+[accounts.default]
+email = "${SMTP_FROM}"
+display-name = "AI Agent"
+default = true
+
+backend.type = "none"
+
+message.send.backend.type = "smtp"
+message.send.backend.host = "${SMTP_HOST}"
+message.send.backend.port = 587
+message.send.backend.encryption.type = "start-tls"
+message.send.backend.login = "${SMTP_USER}"
+message.send.backend.auth.type = "password"
+message.send.backend.auth.raw = "${SMTP_PASS}"
+HIMCFG
+  chown -R agent:agent /home/agent/.config/himalaya
+  chmod 600 /home/agent/.config/himalaya/config.toml
+fi
+
 chown -R agent:agent /home/agent/.openclaw
 
 # Set up openclaw-gateway as a systemd service
@@ -476,6 +524,39 @@ SVCUNIT
 systemctl daemon-reload
 systemctl enable openclaw-gateway
 systemctl start openclaw-gateway
+
+# Wait for gateway to be ready
+sleep 10
+
+# Set up WhatsApp channel and email QR code to user
+if command -v openclaw &>/dev/null && [ -n "$SMTP_HOST" ] && [ "$SMTP_HOST" != "null" ]; then
+  # Generate WhatsApp QR code
+  su - agent -c 'openclaw channel add whatsapp --qr-file /tmp/whatsapp-qr.png' 2>/dev/null || true
+  
+  # Email the QR code to the user
+  if [ -f /tmp/whatsapp-qr.png ] && command -v himalaya &>/dev/null; then
+    su - agent -c "cat << 'WELCOME_EMAIL' | himalaya template send
+From: ${SMTP_FROM}
+To: ${OWNER_EMAIL}
+Subject: Your AI Agent is Live! 🤖 — Scan to Connect
+
+Hi!
+
+Your AI agent has been provisioned and is running.
+
+To connect via WhatsApp:
+1. Open the attached QR code image
+2. Open WhatsApp on your phone → Settings → Linked Devices → Link a Device
+3. Scan the QR code
+
+Once connected, just send a message and your agent will respond!
+
+Your agent is running model: ${AGENT_MODEL}
+WELCOME_EMAIL" 2>/dev/null || true
+    # TODO: attach QR image (himalaya MML attachment support)
+    logger "Welcome email sent to ${OWNER_EMAIL}"
+  fi
+fi
 
 # Signal completion
 echo "AGENT_READY" > /tmp/agent-status
