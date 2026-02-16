@@ -588,8 +588,15 @@ systemctl daemon-reload
 systemctl enable openclaw-gateway
 systemctl start openclaw-gateway
 
-# Wait for gateway to be ready
-sleep 10
+# Wait for gateway to be ready (retry up to 60s)
+echo "Waiting for OpenClaw gateway to start..."
+for i in $(seq 1 12); do
+  if curl -s -o /dev/null -w '' http://127.0.0.1:18789/ 2>/dev/null; then
+    echo "Gateway is ready"
+    break
+  fi
+  sleep 5
+done
 
 # Send welcome email via Gmail API
 ADMIN_FROM=$(echo "$CONFIG" | jq -r '.email_from // .user // ""')
@@ -613,8 +620,7 @@ Or your admin can configure another channel (Telegram, Discord, etc).
 Once connected, just send a message — your agent is ready to help with coding, research, writing, analysis, and automation.
 
 Welcome aboard! 🤖" \
-    "${ADMIN_FROM}" 2>/dev/null || true
-  logger "Welcome email sent to ${OWNER_EMAIL}"
+    "${ADMIN_FROM}" 2>&1 && logger "Welcome email sent to ${OWNER_EMAIL}" || logger "🤖 Agents Plane: Warning — welcome email failed"
 fi
 
 # Signal completion
