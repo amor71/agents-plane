@@ -536,10 +536,14 @@ def get_delegated_token(key_file, impersonate_email):
 def send_gmail(to, subject, body, from_addr, key_file):
     """Send email via Gmail API with delegated auth."""
     import urllib.parse
+    from email.mime.text import MIMEText
     token = get_delegated_token(key_file, from_addr)
     
-    msg = f"From: {from_addr}\r\nTo: {to}\r\nSubject: {subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}"
-    raw = base64.urlsafe_b64encode(msg.encode()).decode()
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["From"] = from_addr
+    msg["To"] = to
+    msg["Subject"] = subject
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     
     data = json.dumps({"raw": raw}).encode()
     url = f"https://gmail.googleapis.com/gmail/v1/users/{from_addr}/messages/send"
