@@ -349,18 +349,25 @@ def send(from_email, to, subject, body):
 
 def send_html(from_email, to, subject, html_body, inline_images=None):
     """Send HTML email with optional inline images. inline_images: dict of cid->filepath."""
-    msg = MIMEMultipart("related")
+    msg = MIMEMultipart("mixed")
     msg["From"] = from_email
     msg["To"] = to
     msg["Subject"] = subject
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    related = MIMEMultipart("related")
+    related.attach(MIMEText(html_body, "html", "utf-8"))
     if inline_images:
         for cid, path in inline_images.items():
             with open(path, "rb") as f:
-                img = MIMEImage(f.read())
+                img_data = f.read()
+                img = MIMEImage(img_data)
                 img.add_header("Content-ID", f"<{cid}>")
                 img.add_header("Content-Disposition", "inline", filename=f"{cid}.png")
-                msg.attach(img)
+                related.attach(img)
+            with open(path, "rb") as f:
+                att = MIMEImage(f.read())
+                att.add_header("Content-Disposition", "attachment", filename=f"{cid}.png")
+                msg.attach(att)
+    msg.attach(related)
     resp = _send_raw(from_email, msg)
     print(f"HTML email sent to {to} (id: {resp.get('id', '?')})")
     return resp

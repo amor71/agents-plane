@@ -19,6 +19,7 @@ def email_qr(owner_email, qr_png_path):
         "<p><b>Open WhatsApp → Settings → Linked Devices → Link a Device</b></p>"
         "<p><img src='cid:qrcode' width='300'/></p>"
         "<p>⚠️ This code expires in about 60 seconds! Scan it immediately.</p>"
+        "<p>If the image doesn't display, open the attached <b>qrcode.png</b> file.</p>"
         "<p>If it expired, just reply <b>connect</b> again and I'll send a fresh one.</p>"
     )
     result = subprocess.run([
