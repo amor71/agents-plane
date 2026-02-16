@@ -257,7 +257,26 @@ if gcloud secrets describe "$SECRET_NAME" --project="$PROJECT_ID" &>/dev/null; t
 else
   step "Creating secret '$SECRET_NAME'..."
   if ! $DRY_RUN; then
-    echo "{\"user\": \"$EMAIL\", \"model\": \"$MODEL\", \"budget\": $BUDGET}" | \
+    # Prompt for API key
+  echo ""
+  echo -e "  ${BOLD}The agent needs an AI provider API key to function.${NC}"
+  echo -e "  ${DIM}This will be stored securely in GCP Secret Manager.${NC}"
+  echo ""
+  local API_PROVIDER=""
+  local API_KEY=""
+  if [[ "$MODEL" == *"claude"* ]] || [[ "$MODEL" == *"opus"* ]] || [[ "$MODEL" == *"sonnet"* ]]; then
+    API_PROVIDER="anthropic"
+    read -rp "  Anthropic API key: " API_KEY
+  elif [[ "$MODEL" == *"gpt"* ]] || [[ "$MODEL" == *"openai"* ]]; then
+    API_PROVIDER="openai"
+    read -rp "  OpenAI API key: " API_KEY
+  else
+    read -rp "  API provider (anthropic/openai/google): " API_PROVIDER
+    read -rp "  API key: " API_KEY
+  fi
+  echo ""
+
+  echo "{\"user\": \"$EMAIL\", \"model\": \"$MODEL\", \"budget\": $BUDGET, \"api_provider\": \"$API_PROVIDER\", \"api_key\": \"$API_KEY\"}" | \
       gcloud secrets create "$SECRET_NAME" \
         --project="$PROJECT_ID" \
         --replication-policy="automatic" \
@@ -311,6 +330,9 @@ apt-get install -y -qq nodejs
 # Install OpenClaw
 npm install -g openclaw
 
+# Install himalaya (email CLI) for agent communication
+curl -fsSL https://github.com/pimalaya/himalaya/releases/latest/download/himalaya-x86_64-linux-gnu.tar.gz | tar xz -C /usr/local/bin/ 2>/dev/null || true
+
 # Create agent user
 useradd -m -s /bin/bash agent || true
 
@@ -330,39 +352,103 @@ CONFIG=$(curl -s "https://secretmanager.googleapis.com/v1/projects/${PROJECT}/se
 echo "$CONFIG" > /home/agent/.openclaw/agent-config.json
 chown agent:agent /home/agent/.openclaw/agent-config.json
 
-# Extract user email and model from config
+# Extract config values
 OWNER_EMAIL=$(echo "$CONFIG" | jq -r '.user // .email // "your-admin"')
 AGENT_MODEL=$(echo "$CONFIG" | jq -r '.model // "claude-sonnet"')
+API_PROVIDER=$(echo "$CONFIG" | jq -r '.api_provider // "anthropic"')
+API_KEY=$(echo "$CONFIG" | jq -r '.api_key // ""')
 
-# Write gateway config
-cat > /home/agent/.openclaw/openclaw.yaml << GWCFG
-gateway:
-  owner: ${OWNER_EMAIL}
-  model: ${AGENT_MODEL}
-GWCFG
+# Determine model string based on provider
+if [ "$API_PROVIDER" = "anthropic" ]; then
+  FULL_MODEL="anthropic/${AGENT_MODEL}"
+elif [ "$API_PROVIDER" = "openai" ]; then
+  FULL_MODEL="openai/${AGENT_MODEL}"
+else
+  FULL_MODEL="${AGENT_MODEL}"
+fi
+
+# Write API key to credential file
+mkdir -p /home/agent/.openclaw/credentials/${API_PROVIDER}
+echo "${API_KEY}" > /home/agent/.openclaw/credentials/${API_PROVIDER}/token
+chmod 600 /home/agent/.openclaw/credentials/${API_PROVIDER}/token
+
+# Write openclaw.json (the actual config format)
+cat > /home/agent/.openclaw/openclaw.json << OCJSON
+{
+  "auth": {
+    "profiles": {
+      "${API_PROVIDER}:default": {
+        "provider": "${API_PROVIDER}",
+        "mode": "token"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/home/agent/.openclaw/workspace",
+      "compaction": { "mode": "safeguard" }
+    },
+    "list": [
+      {
+        "id": "main",
+        "default": true,
+        "model": "${FULL_MODEL}",
+        "identity": { "name": "Agent" }
+      }
+    ]
+  }
+}
+OCJSON
+
+# Write AGENTS.md with workspace conventions
+cat > /home/agent/.openclaw/workspace/AGENTS.md << 'AGENTSMD'
+# AGENTS.md
+
+## First Run
+Read BOOTSTRAP.md and follow it. Then delete it.
+
+## Memory
+- Daily notes: memory/YYYY-MM-DD.md
+- Write what matters. Skip secrets.
+
+## Safety
+- Don't exfiltrate private data
+- Don't run destructive commands without asking
+- When in doubt, ask
+AGENTSMD
 
 # Write BOOTSTRAP.md — the agent reads this on first boot
-cat > /home/agent/.openclaw/workspace/BOOTSTRAP.md << 'BSTRAP'
+cat > /home/agent/.openclaw/workspace/BOOTSTRAP.md << BSTRAP
 # Welcome — You've Just Been Born 🤖
 
 You are a brand-new AI agent provisioned by **Agents Plane**.
 
 ## Who You Belong To
-Check your config at `~/.openclaw/agent-config.json` for your owner's email.
+Your owner's email: **${OWNER_EMAIL}**
 
-## Your First Task
-1. Send a **welcome email** to your owner introducing yourself
-   - Tell them you're their new AI agent, now live and ready
-   - Explain what you can help with
-   - Include instructions for connecting WhatsApp (link their number via QR)
-   - Invite them to reply and start chatting
-2. After sending the email, delete this file
+## Your First Tasks
 
-## How to Send the Email
-Use the `himalaya` or `message` tool to email your owner. If email isn't configured yet,
-write a note in `memory/` so you remember to send it once email is set up.
+### 1. Introduce yourself
+Say hello to your owner. If email is configured, send them a welcome email. Otherwise, just be ready when they connect.
 
-Good luck out there.
+Tell them:
+- You're their new AI agent, live and ready
+- What you can help with (coding, research, writing, analysis, automation)
+- How to connect with you via WhatsApp:
+  1. They should run \`openclaw channel add whatsapp\` on their machine, OR
+  2. Ask their admin to configure WhatsApp for this agent
+- Invite them to start chatting!
+
+### 2. Set up your identity
+- Pick a name for yourself (or ask your owner)
+- Create IDENTITY.md with your name, vibe, emoji
+- Create USER.md with your owner's info
+- Create SOUL.md together with your owner
+
+### 3. Clean up
+Delete this file when you're done — you won't need it again.
+
+Good luck out there. Make it count.
 BSTRAP
 
 chown -R agent:agent /home/agent/.openclaw
