@@ -258,11 +258,11 @@ else
   step "Creating secret '$SECRET_NAME'..."
   if ! $DRY_RUN; then
     # Use shared plane API key from config
-  local API_PROVIDER=$(jq -r '.agents.api_provider // "anthropic"' "$CONFIG_FILE")
-  local API_KEY_SECRET=$(jq -r '.agents.api_key_secret // ""' "$CONFIG_FILE")
+  API_PROVIDER=$(jq -r '.agents.api_provider // "anthropic"' "$CONFIG_FILE")
+  API_KEY_SECRET=$(jq -r '.agents.api_key_secret // ""' "$CONFIG_FILE")
   
   # Fetch shared API key from Secret Manager
-  local API_KEY=""
+  API_KEY=""
   if [[ -n "$API_KEY_SECRET" ]]; then
     API_KEY=$(gcloud secrets versions access latest --secret="$API_KEY_SECRET" --project="$PROJECT_ID" 2>/dev/null || echo "")
   fi
@@ -274,7 +274,7 @@ else
   fi
 
   # Get email config from plane config
-  local EMAIL_FROM=$(jq -r '.email.from // ""' "$CONFIG_FILE")
+  EMAIL_FROM=$(jq -r '.email.from // ""' "$CONFIG_FILE")
 
   echo "{\"user\": \"$EMAIL\", \"model\": \"$MODEL\", \"budget\": $BUDGET, \"api_provider\": \"$API_PROVIDER\", \"api_key\": \"$API_KEY\", \"email_from\": \"$EMAIL_FROM\"}" | \
       gcloud secrets create "$SECRET_NAME" \

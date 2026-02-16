@@ -69,10 +69,13 @@ esac
 
 logger "🤖 Agents Plane: Config loaded — owner=$OWNER_EMAIL model=$AGENT_MODEL"
 
-# ─── 7. Pull shared API key ──────────────────────────────────────
-API_KEY=$(fetch_secret "agents-plane-api-key" 2>/dev/null || echo "")
+# ─── 7. Pull API key (from agent config first, then shared secret) ─
+API_KEY=$(echo "$CONFIG" | jq -r '.api_key // empty' 2>/dev/null || echo "")
+if [ -z "$API_KEY" ]; then
+  API_KEY=$(fetch_secret "agents-plane-api-key" 2>/dev/null || echo "")
+fi
 if [ -z "$API_KEY" ] || [ "$API_KEY" = "null" ]; then
-  logger "🤖 Agents Plane: Warning — no shared API key found"
+  logger "🤖 Agents Plane: Warning — no API key found (checked config + shared secret)"
 fi
 
 # ─── 8. Pull SA key for Gmail API ────────────────────────────────
@@ -88,21 +91,14 @@ chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.openclaw/agent-config.json"
 
 # ─── 10. Write auth profile ──────────────────────────────────────
 if [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ]; then
-  cat > "$AGENT_HOME/.openclaw/agents/main/agent/auth-profiles.json" << AUTHEOF
-{
-  "version": 1,
-  "profiles": {
-    "${API_PROVIDER}:default": {
-      "type": "token",
-      "provider": "${API_PROVIDER}",
-      "token": "${API_KEY}"
-    }
-  },
-  "lastGood": {
-    "${API_PROVIDER}": "${API_PROVIDER}:default"
-  }
-}
-AUTHEOF
+  jq -n \
+    --arg provider "$API_PROVIDER" \
+    --arg key "$API_KEY" \
+    '{
+      version: 1,
+      profiles: { ("\($provider):default"): { type: "token", provider: $provider, token: $key } },
+      lastGood: { ($provider): "\($provider):default" }
+    }' > "$AGENT_HOME/.openclaw/agents/main/agent/auth-profiles.json"
   chown -R "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.openclaw/agents/"
 fi
 
@@ -359,7 +355,7 @@ logger "🤖 Agents Plane: Gateway service started"
 echo "Waiting for OpenClaw gateway..."
 READY=false
 for i in $(seq 1 12); do
-  if curl -s -o /dev/null http://127.0.0.1:18789/ 2>/dev/null; then
+  if curl -sf -o /dev/null http://127.0.0.1:18789/ 2>/dev/null; then
     READY=true
     echo "Gateway is ready (attempt $i)"
     break
