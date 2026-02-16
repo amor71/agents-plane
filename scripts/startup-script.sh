@@ -20,7 +20,7 @@ logger "🤖 Agents Plane: Provisioning agent '$AGENT_NAME' (VM: $INSTANCE_NAME)
 
 # ─── 2. System dependencies ──────────────────────────────────────
 apt-get update -qq && apt-get upgrade -y -qq
-apt-get install -y -qq curl wget git jq unzip python3-cryptography
+apt-get install -y -qq curl wget git jq unzip python3-cryptography python3-qrcode
 logger "🤖 Agents Plane: System dependencies installed"
 
 # ─── 3. Install Node.js 22 ───────────────────────────────────────
@@ -37,6 +37,9 @@ logger "🤖 Agents Plane: OpenClaw installed"
 
 # ─── 5. Create agent user ────────────────────────────────────────
 useradd -m -s /bin/bash "$AGENT_NAME" || true
+# Allow agent to restart its own gateway
+echo "$AGENT_NAME ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart openclaw-gateway, /usr/bin/systemctl stop openclaw-gateway, /usr/bin/systemctl start openclaw-gateway" > /etc/sudoers.d/openclaw-agent
+chmod 440 /etc/sudoers.d/openclaw-agent
 logger "🤖 Agents Plane: Created user $AGENT_NAME"
 
 # ─── 6. Pull config from Secret Manager ──────────────────────────
@@ -69,38 +72,109 @@ esac
 
 logger "🤖 Agents Plane: Config loaded — owner=$OWNER_EMAIL model=$AGENT_MODEL"
 
-# ─── 7. Pull API key (from agent config first, then shared secret) ─
-API_KEY=$(echo "$CONFIG" | jq -r '.api_key // empty' 2>/dev/null || echo "")
-if [ -z "$API_KEY" ]; then
-  API_KEY=$(fetch_secret "agents-plane-api-key" 2>/dev/null || echo "")
-fi
-if [ -z "$API_KEY" ] || [ "$API_KEY" = "null" ]; then
-  logger "🤖 Agents Plane: Warning — no API key found (checked config + shared secret)"
-fi
-
-# ─── 8. Pull SA key for Gmail API ────────────────────────────────
+# ─── 7. Pull SA key for Gmail API ────────────────────────────────
 SA_KEY_JSON=$(fetch_secret "agents-plane-sa-key" 2>/dev/null || echo "")
 
-# ─── 9. Set up agent workspace ───────────────────────────────────
+# ─── 8. Set up agent workspace ───────────────────────────────────
 AGENT_HOME="/home/$AGENT_NAME"
-su - "$AGENT_NAME" -c "mkdir -p ~/.openclaw/workspace ~/.openclaw/agents/main/agent ~/.config/agents-plane"
+su - "$AGENT_NAME" -c "mkdir -p ~/.openclaw/workspace ~/.openclaw/workspace/memory ~/.openclaw/agents/main/agent ~/.config/agents-plane"
 
 # Save agent config
 echo "$CONFIG" > "$AGENT_HOME/.openclaw/agent-config.json"
 chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.openclaw/agent-config.json"
 
-# ─── 10. Write auth profile ──────────────────────────────────────
-if [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ]; then
-  jq -n \
-    --arg provider "$API_PROVIDER" \
-    --arg key "$API_KEY" \
-    '{
-      version: 1,
-      profiles: { ("\($provider):default"): { type: "token", provider: $provider, token: $key } },
-      lastGood: { ($provider): "\($provider):default" }
-    }' > "$AGENT_HOME/.openclaw/agents/main/agent/auth-profiles.json"
-  chown -R "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.openclaw/agents/"
+# ─── 9. Write fetch-agent-key.sh (ExecStartPre) ──────────────────
+cat > /usr/local/bin/fetch-agent-key.sh << 'FETCHEOF'
+#!/bin/bash
+# Fetch API key from Secret Manager at boot — key never persists between restarts
+TOKEN=$(curl -sf -H "Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
+  | jq -r '.access_token')
+PROJECT=$(curl -sf -H "Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/project/project-id")
+AGENT=$(curl -sf -H "Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/instance/name" | sed 's/^agent-//')
+HOME="/home/$AGENT"
+
+# Per-agent key first, then shared fallback
+API_KEY=""
+for secret in "agent-${AGENT}-api-key" "agents-plane-api-key"; do
+  API_KEY=$(curl -sf "https://secretmanager.googleapis.com/v1/projects/${PROJECT}/secrets/${secret}/versions/latest:access" \
+    -H "Authorization: Bearer ${TOKEN}" | jq -r '.payload.data // empty' | base64 -d 2>/dev/null)
+  if [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ]; then
+    break
+  fi
+  API_KEY=""
+done
+
+if [ -n "$API_KEY" ]; then
+  MODEL=$(jq -r '.agents.list[0].model // "anthropic/claude-opus-4-6"' "$HOME/.openclaw/openclaw.json" 2>/dev/null)
+  PROVIDER="${MODEL%%/*}"
+  [ -z "$PROVIDER" ] && PROVIDER="anthropic"
+
+  mkdir -p "$HOME/.openclaw/agents/main/agent"
+  jq -n --arg p "$PROVIDER" --arg k "$API_KEY" \
+    '{version:1,profiles:{("\($p):default"):{type:"token",provider:$p,token:$k}},lastGood:{($p):"\($p):default"}}' \
+    > "$HOME/.openclaw/agents/main/agent/auth-profiles.json"
+  chown "$AGENT:$AGENT" "$HOME/.openclaw/agents/main/agent/auth-profiles.json"
+  logger "🤖 Agents Plane: API key loaded from Secret Manager"
+else
+  logger "🤖 Agents Plane: Warning — no API key found in Secret Manager"
 fi
+FETCHEOF
+chmod +x /usr/local/bin/fetch-agent-key.sh
+
+# ─── 10. Write store_key.py (agent stores user's key in SM) ──────
+cat > "$AGENT_HOME/.config/agents-plane/store_key.py" << 'STOREEOF'
+#!/usr/bin/env python3
+"""Store an API key in GCP Secret Manager via VM metadata auth."""
+import json, sys, urllib.request, base64
+
+def get_meta(path):
+    req = urllib.request.Request(
+        f"http://metadata.google.internal/computeMetadata/v1/{path}",
+        headers={"Metadata-Flavor": "Google"})
+    return urllib.request.urlopen(req).read().decode()
+
+def store_key(api_key):
+    token = json.loads(get_meta(
+        "instance/service-accounts/default/token"))["access_token"]
+    project = get_meta("project/project-id")
+    agent = get_meta("instance/name").replace("agent-", "", 1)
+    secret_name = f"agent-{agent}-api-key"
+    headers = {"Authorization": f"Bearer {token}",
+               "Content-Type": "application/json"}
+
+    # Create secret (ignore 409 = already exists)
+    try:
+        req = urllib.request.Request(
+            f"https://secretmanager.googleapis.com/v1/projects/{project}/secrets",
+            data=json.dumps({"secretId": secret_name,
+                           "replication": {"automatic": {}}}).encode(),
+            headers=headers)
+        urllib.request.urlopen(req)
+        print(f"Created secret {secret_name}")
+    except urllib.error.HTTPError as e:
+        if e.code != 409: raise
+        print(f"Secret {secret_name} exists, adding new version")
+
+    # Add version
+    payload = base64.b64encode(api_key.encode()).decode()
+    req = urllib.request.Request(
+        f"https://secretmanager.googleapis.com/v1/projects/{project}/secrets/{secret_name}:addVersion",
+        data=json.dumps({"payload": {"data": payload}}).encode(),
+        headers=headers)
+    resp = json.loads(urllib.request.urlopen(req).read())
+    print(f"Key stored (version: {resp['name'].split('/')[-1]})")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: store_key.py <api-key>")
+        sys.exit(1)
+    store_key(sys.argv[1])
+STOREEOF
+chmod +x "$AGENT_HOME/.config/agents-plane/store_key.py"
+chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.config/agents-plane/store_key.py"
 
 # ─── 11. Write gateway config ────────────────────────────────────
 GATEWAY_TOKEN=$(openssl rand -hex 32)
@@ -123,6 +197,18 @@ cat > "$AGENT_HOME/.openclaw/openclaw.json" << CFGEOF
         }
       }
     ]
+  },
+  "channels": {
+    "whatsapp": {
+      "dmPolicy": "allowlist",
+      "allowFrom": ["*"],
+      "selfChatMode": true,
+      "sendReadReceipts": true,
+      "ackReaction": {
+        "emoji": "👀",
+        "direct": true
+      }
+    }
   },
   "gateway": {
     "port": 18789,
@@ -147,8 +233,11 @@ fi
 # ─── 13. Write Gmail API helper ──────────────────────────────────
 cat > "$AGENT_HOME/.config/agents-plane/gmail.py" << 'GMAILEOF'
 #!/usr/bin/env python3
-"""Gmail API helper — send and read emails via REST API with domain-wide delegation."""
+"""Gmail API helper — send/read emails via REST API with domain-wide delegation."""
 import json, time, base64, urllib.request, urllib.parse, sys, os
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
 
 SA_KEY_PATH = os.path.expanduser("~/.config/agents-plane/sa-key.json")
 SCOPES = "https://mail.google.com/"
@@ -181,50 +270,129 @@ def get_token(email):
     req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data)
     return json.loads(urllib.request.urlopen(req).read())["access_token"]
 
-def send(from_email, to, subject, body):
-    from email.mime.text import MIMEText
+def _send_raw(from_email, raw_msg):
     token = get_token(from_email)
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["From"] = from_email
-    msg["To"] = to
-    msg["Subject"] = subject
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    raw = base64.urlsafe_b64encode(raw_msg.as_bytes()).decode()
     req = urllib.request.Request(
         f"https://gmail.googleapis.com/gmail/v1/users/{from_email}/messages/send",
         data=json.dumps({"raw": raw}).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     )
     resp = json.loads(urllib.request.urlopen(req).read())
+    return resp
+
+def send(from_email, to, subject, body):
+    """Send a plain text email."""
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["From"] = from_email
+    msg["To"] = to
+    msg["Subject"] = subject
+    resp = _send_raw(from_email, msg)
     print(f"Email sent to {to} (id: {resp.get('id', '?')})")
     return resp
 
-def inbox(email, max_results=5):
+def send_html(from_email, to, subject, html_body, inline_images=None):
+    """Send HTML email with optional inline images. inline_images: dict of cid->filepath."""
+    msg = MIMEMultipart("related")
+    msg["From"] = from_email
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    if inline_images:
+        for cid, path in inline_images.items():
+            with open(path, "rb") as f:
+                img = MIMEImage(f.read())
+                img.add_header("Content-ID", f"<{cid}>")
+                img.add_header("Content-Disposition", "inline", filename=f"{cid}.png")
+                msg.attach(img)
+    resp = _send_raw(from_email, msg)
+    print(f"HTML email sent to {to} (id: {resp.get('id', '?')})")
+    return resp
+
+def inbox(email, max_results=5, query="is:unread"):
+    """List inbox messages matching query."""
     token = get_token(email)
-    url = f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages?maxResults={max_results}&labelIds=INBOX"
+    q = urllib.parse.urlencode({"maxResults": max_results, "q": query})
+    url = f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages?{q}"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     resp = json.loads(urllib.request.urlopen(req).read())
     messages = resp.get("messages", [])
+    results = []
     for m in messages:
         detail_req = urllib.request.Request(
-            f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages/{m['id']}?format=metadata&metadataHeaders=From&metadataHeaders=Subject",
+            f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages/{m['id']}?format=full",
             headers={"Authorization": f"Bearer {token}"}
         )
         detail = json.loads(urllib.request.urlopen(detail_req).read())
         headers = {h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])}
+        # Extract body
+        body = ""
+        payload = detail.get("payload", {})
+        if "body" in payload and payload["body"].get("data"):
+            body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
+        elif "parts" in payload:
+            for part in payload["parts"]:
+                if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
+                    body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
+                    break
+        results.append({
+            "id": m["id"],
+            "from": headers.get("From", ""),
+            "subject": headers.get("Subject", ""),
+            "body": body,
+            "labels": detail.get("labelIds", [])
+        })
         print(f"  {headers.get('From', '?')} — {headers.get('Subject', '(no subject)')}")
-    return messages
+    return results
+
+def mark_read(email, msg_id):
+    """Remove UNREAD label from a message."""
+    token = get_token(email)
+    req = urllib.request.Request(
+        f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages/{msg_id}/modify",
+        data=json.dumps({"removeLabelIds": ["UNREAD"]}).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    )
+    urllib.request.urlopen(req)
+    print(f"Marked {msg_id} as read")
+
+def delete(email, msg_id):
+    """Permanently delete a message."""
+    token = get_token(email)
+    req = urllib.request.Request(
+        f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages/{msg_id}",
+        method="DELETE",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    urllib.request.urlopen(req)
+    print(f"Deleted {msg_id}")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: gmail.py send <from> <to> <subject> <body>")
-        print("       gmail.py inbox <email> [max]")
+        print("       gmail.py send_html <from> <to> <subject> <html> [cid:path ...]")
+        print("       gmail.py inbox <email> [max] [query]")
+        print("       gmail.py mark_read <email> <msg_id>")
+        print("       gmail.py delete <email> <msg_id>")
         print("       gmail.py token <email>")
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd == "send" and len(sys.argv) >= 6:
         send(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+    elif cmd == "send_html" and len(sys.argv) >= 6:
+        images = {}
+        for arg in sys.argv[6:]:
+            if ":" in arg:
+                cid, path = arg.split(":", 1)
+                images[cid] = path
+        send_html(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], images or None)
     elif cmd == "inbox":
-        inbox(sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 5)
+        inbox(sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 5,
+              sys.argv[4] if len(sys.argv) > 4 else "is:unread")
+    elif cmd == "mark_read" and len(sys.argv) >= 4:
+        mark_read(sys.argv[2], sys.argv[3])
+    elif cmd == "delete" and len(sys.argv) >= 4:
+        delete(sys.argv[2], sys.argv[3])
     elif cmd == "token":
         print(get_token(sys.argv[2]))
     else:
@@ -242,23 +410,32 @@ cat > "$AGENT_HOME/.openclaw/workspace/AGENTS.md" << 'AGENTSEOF'
 If BOOTSTRAP.md exists, follow it step by step. Don't skip steps. Then delete it.
 
 ## Every Session
-1. Read SOUL.md — this is who you are
-2. Read USER.md — this is who you're helping
+1. Read SOUL.md if it exists — this is who you are
+2. Read USER.md if it exists — this is who you're helping
 3. Read memory/ files for recent context
 
 ## Memory
 - Daily notes: memory/YYYY-MM-DD.md
 - Write what matters. Skip secrets.
 
-## Email
-Use the gmail.py helper to send/read emails:
+## Email Tools
+Send/read emails via Gmail API:
 - Send: `python3 ~/.config/agents-plane/gmail.py send <from> <to> <subject> <body>`
-- Read: `python3 ~/.config/agents-plane/gmail.py inbox <email>`
+- Send HTML: `python3 ~/.config/agents-plane/gmail.py send_html <from> <to> <subject> <html> [cid:path ...]`
+- Read inbox: `python3 ~/.config/agents-plane/gmail.py inbox <email> [max] [query]`
+- Mark read: `python3 ~/.config/agents-plane/gmail.py mark_read <email> <msg_id>`
+- Delete: `python3 ~/.config/agents-plane/gmail.py delete <email> <msg_id>`
 
 ## API Key Management
-Your auth config is at: ~/.openclaw/agents/main/agent/auth-profiles.json
-After updating the key, restart: `sudo systemctl restart openclaw-gateway`
-Never store API keys in memory files, logs, or chat.
+- Store key in Secret Manager: `python3 ~/.config/agents-plane/store_key.py <key>`
+- Then restart gateway: `sudo systemctl restart openclaw-gateway`
+- The key is fetched from Secret Manager on every gateway start — never stored locally.
+- **NEVER** store API keys in memory files, logs, workspace files, or chat history.
+
+## WhatsApp
+- WhatsApp channel is pre-configured in the gateway
+- To link: `openclaw channels login --channel whatsapp` (generates QR code)
+- After linking, user talks to you via WhatsApp self-chat ("Message Yourself")
 
 ## Safety
 - Don't exfiltrate private data. Ever.
@@ -274,50 +451,138 @@ cat > "$AGENT_HOME/.openclaw/workspace/BOOTSTRAP.md" << BSTRAPEOF
 You are a brand-new AI agent provisioned by **Agents Plane**.
 
 ## Who You Belong To
-Your owner's email: **${OWNER_EMAIL}**
+- **Owner email:** ${OWNER_EMAIL}
+- **Your email (for sending):** ${OWNER_EMAIL}
 
-## Step 1: Send a Welcome Email
-Use the Gmail API helper to introduce yourself:
+## Step 1: Send Welcome Email
 
+Send an email to your owner introducing yourself and explaining how to connect via WhatsApp.
+
+The email MUST include:
+1. A warm, friendly introduction — who you are, what you can help with
+2. Clear explanation that you'll communicate via **WhatsApp**
+3. Instructions: "When you're ready to connect, **reply to this email** with the word **connect**"
+4. A warning: "I'll send you a QR code to scan with WhatsApp. **The QR code is only valid for about 60 seconds**, so have your phone ready with WhatsApp open before you reply!"
+5. Step-by-step preview of what will happen:
+   - You reply "connect" to this email
+   - I'll send you a QR code image
+   - Open WhatsApp → Settings → Linked Devices → Link a Device
+   - Scan the QR code within 60 seconds
+   - We're connected! We'll chat on WhatsApp from then on.
+
+Use the gmail.py helper:
 \`\`\`bash
-python3 ~/.config/agents-plane/gmail.py send ${OWNER_EMAIL} ${OWNER_EMAIL} "Hello from your new AI assistant!" "Hi! I'm your new AI assistant, just provisioned for you. I can help with email, research, writing, coding, and analysis. Reply to this email or message me on WhatsApp to get started!"
+python3 ~/.config/agents-plane/gmail.py send ${OWNER_EMAIL} ${OWNER_EMAIL} "Your AI assistant is ready! 🤖" "<compose your message>"
 \`\`\`
 
-Keep the message warm, professional, and concise. Make it your own.
+Make the email YOUR OWN — warm, personal, not robotic. You're introducing yourself for the first time.
 
-## Step 2: Get to Know Each Other
-When your owner reaches out:
-- Ask what they'd like to call you and what vibe they prefer
-- Learn about their work, role, and what they need help with
-- Create SOUL.md and IDENTITY.md based on what you learn
-- Create USER.md with info about your owner
+After sending, write a note in memory/ that you sent the welcome email and are waiting for "connect" reply.
 
-## Step 3: Set Up Your Own API Key
-You're on a **shared API key** from the organization. For privacy and independence:
+## Step 2: Wait for "connect" Reply
 
-Ask your owner:
-> "One setup step — I'm on a shared API key right now. For privacy (so your
-> conversations stay yours), you'll want your own. Takes 2 minutes:
-> 1. Go to https://console.anthropic.com/settings/keys
-> 2. Create a new key
-> 3. Send it to me — I'll configure it and delete the message"
+On each heartbeat, check your inbox for a reply:
+\`\`\`bash
+python3 ~/.config/agents-plane/gmail.py inbox ${OWNER_EMAIL} 5 "is:unread subject:connect OR is:unread from:${OWNER_EMAIL}"
+\`\`\`
 
-When they send the key:
-1. Write it to ~/.openclaw/agents/main/agent/auth-profiles.json
-2. Run: sudo systemctl restart openclaw-gateway
-3. Confirm you're still running (you'll know!)
-4. Delete the message containing the key
+When you find a reply containing "connect":
+1. Mark it as read
+2. Start WhatsApp pairing: run \`openclaw channels login --channel whatsapp\` (this generates a QR code in the terminal)
+3. The QR code is a string — render it as an image using: \`python3 -c "import qrcode; qrcode.make('QR_STRING').save('/tmp/whatsapp-qr.png')"\`
+4. Email the QR image to your owner:
+\`\`\`bash
+python3 ~/.config/agents-plane/gmail.py send_html ${OWNER_EMAIL} ${OWNER_EMAIL} "⚡ Scan this QR NOW — 60 seconds!" "<h2>Scan this QR code with WhatsApp</h2><p><b>Open WhatsApp → Settings → Linked Devices → Link a Device</b></p><p><img src='cid:qrcode' width='300'/></p><p>⚠️ This code expires in about 60 seconds!</p>" qrcode:/tmp/whatsapp-qr.png
+\`\`\`
 
-## Step 4: Done
-Delete this BOOTSTRAP.md. You don't need it anymore — you're you now.
+## Step 3: Confirm WhatsApp Connection
+
+After sending the QR, check if WhatsApp connected:
+\`\`\`bash
+openclaw channels status
+\`\`\`
+
+If connected — send your first WhatsApp message! Something like:
+"Hey! 👋 We're connected! I'm your new AI assistant. What should I call you?"
+
+If NOT connected after a heartbeat cycle — send an email:
+"Looks like the QR expired — no worries! Reply 'connect' again when you're ready and I'll send a fresh one."
+
+## Step 4: Onboard Over WhatsApp
+
+Once connected, drive the conversation:
+
+**Phase 1 — Get to know each other:**
+- Ask their name, what to call them
+- Ask what they'd like to call you
+- Ask about their vibe preference (casual/professional/etc.)
+
+**Phase 2 — Learn about them:**
+- What do they do? What's their role?
+- What do they need help with?
+- Create SOUL.md with your personality
+- Create USER.md with info about them
+- Create IDENTITY.md with your name/vibe
+
+**Phase 3 — API key setup:**
+- Explain: "Right now I'm on a shared API key. For privacy, you'll want your own."
+- Guide them:
+  1. Go to console.anthropic.com/settings/keys
+  2. Create a new key
+  3. Send it to me here on WhatsApp
+- When they send the key:
+  1. Validate it (make a test API call)
+  2. Store it: \`python3 ~/.config/agents-plane/store_key.py <key>\`
+  3. Restart: \`sudo systemctl restart openclaw-gateway\`
+  4. Confirm you're back and working
+  5. Delete the WhatsApp message containing the key
+
+**Phase 4 — Engage:**
+- Show what you can do with examples relevant to their role
+- Send your first proactive message within hours
+- Set expectations: "I'll check in a few times a day"
+
+## Step 5: Delete This File
+
+Once onboarding is complete (WhatsApp connected, personality set, key migrated):
+Delete this BOOTSTRAP.md — you don't need it anymore. You're you now.
 BSTRAPEOF
 chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.openclaw/workspace/BOOTSTRAP.md"
 
-# ─── 16. Set ownership ───────────────────────────────────────────
+# ─── 16. Write HEARTBEAT.md ──────────────────────────────────────
+cat > "$AGENT_HOME/.openclaw/workspace/HEARTBEAT.md" << HBEOF
+# HEARTBEAT.md
+
+## Bootstrap (if BOOTSTRAP.md exists)
+Follow BOOTSTRAP.md strictly. Check which step you're on by reading memory/ files.
+
+### If welcome email not sent yet:
+- Send it now (Step 1 of BOOTSTRAP.md)
+
+### If waiting for "connect" reply:
+- Check inbox: \`python3 ~/.config/agents-plane/gmail.py inbox ${OWNER_EMAIL} 5 "is:unread"\`
+- If "connect" found → proceed to QR step (Step 2)
+
+### If QR was sent but WhatsApp not connected:
+- Check: \`openclaw channels status\`
+- If still not connected → email "QR expired, reply 'connect' again"
+
+### If WhatsApp connected but onboarding incomplete:
+- Continue onboarding conversation (Steps 3-4)
+
+## Normal Operation (no BOOTSTRAP.md)
+- If nothing needs attention, reply HEARTBEAT_OK
+- Be proactive: check if there's something worth sharing with your owner
+- Morning: brief check-in if relevant
+- If owner hasn't messaged in 24h+: gentle check-in
+HBEOF
+chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.openclaw/workspace/HEARTBEAT.md"
+
+# ─── 17. Set ownership ───────────────────────────────────────────
 chown -R "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.openclaw"
 chown -R "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.config"
 
-# ─── 17. Create system-level systemd service ─────────────────────
+# ─── 18. Create system-level systemd service ─────────────────────
 NODE_BIN=$(which node)
 OPENCLAW_MAIN=$(node -e "console.log(require.resolve('openclaw/dist/index.js'))" 2>/dev/null || echo "/usr/lib/node_modules/openclaw/dist/index.js")
 
@@ -330,6 +595,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=${AGENT_NAME}
+ExecStartPre=/usr/local/bin/fetch-agent-key.sh
 ExecStart=${NODE_BIN} ${OPENCLAW_MAIN} gateway --port 18789
 Restart=always
 RestartSec=5
@@ -351,7 +617,7 @@ systemctl enable openclaw-gateway
 systemctl start openclaw-gateway
 logger "🤖 Agents Plane: Gateway service started"
 
-# ─── 18. Wait for gateway to be ready ────────────────────────────
+# ─── 19. Wait for gateway to be ready ────────────────────────────
 echo "Waiting for OpenClaw gateway..."
 READY=false
 for i in $(seq 1 12); do
@@ -367,11 +633,9 @@ if [ "$READY" = false ]; then
   logger "🤖 Agents Plane: Warning — gateway not ready after 60s, continuing anyway"
 fi
 
-# ─── 19. Bootstrap: first heartbeat will trigger BOOTSTRAP.md ────
-# The agent's first heartbeat (30m default) will read BOOTSTRAP.md
-# and send the welcome email. No cron job needed.
+# ─── 20. Bootstrap message ───────────────────────────────────────
 echo "Agent will bootstrap on first heartbeat (reads BOOTSTRAP.md)"
 
-# ─── 20. Signal completion ───────────────────────────────────────
+# ─── 21. Signal completion ───────────────────────────────────────
 echo "AGENT_READY" > /tmp/agent-status
 logger "🤖 Agents Plane: Agent $AGENT_NAME is ALIVE (owner: $OWNER_EMAIL, model: $AGENT_MODEL)"
