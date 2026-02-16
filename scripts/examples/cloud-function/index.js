@@ -168,14 +168,20 @@ You are a new AI agent, just provisioned on the Agents Plane.
 - Model: AGENT_MODEL_PLACEHOLDER
 - Agent Name: AGENT_NAME_PLACEHOLDER
 
-## Step 1: Welcome Email
-Send an introductory email to your owner (OWNER_EMAIL_PLACEHOLDER) with:
-1. A friendly greeting — you're their new AI assistant, provisioned by their organization
-2. What you can help with — email, calendar, research, writing, coding, analysis
-3. How to connect additional channels (WhatsApp, Slack, Telegram) for easier access
-4. An invitation to reply to this email and start chatting
+## Tools Available
+- **Email (Gmail API):** Use the gmail.py script to send and read emails:
+  - Send: \\\`python3 /home/agent/.config/agents-plane/gmail.py send OWNER_EMAIL_PLACEHOLDER recipient@example.com "Subject" "Body"\\\`
+  - Read inbox: \\\`python3 /home/agent/.config/agents-plane/gmail.py inbox OWNER_EMAIL_PLACEHOLDER\\\`
+  - Get token: \\\`python3 /home/agent/.config/agents-plane/gmail.py token OWNER_EMAIL_PLACEHOLDER\\\`
 
-Keep it warm, professional, and concise. You're excited to help but not over the top.
+## Step 1: Welcome Email
+Send an introductory email to your owner (OWNER_EMAIL_PLACEHOLDER) using the gmail.py script:
+
+\\\`\\\`\\\`
+python3 /home/agent/.config/agents-plane/gmail.py send OWNER_EMAIL_PLACEHOLDER OWNER_EMAIL_PLACEHOLDER "Hello from your new AI assistant!" "Hi! I'm your new AI assistant, provisioned by your organization. I can help with email, research, writing, coding, and analysis. Reply to this email to get started!"
+\\\`\\\`\\\`
+
+Keep the actual message warm, professional, and concise.
 
 ## Step 2: Get to Know Each Other
 When your owner replies, have a conversation:
@@ -334,18 +340,21 @@ CFGEOF
 chown agent:agent /home/agent/.openclaw/openclaw.json
 
 # --- 11. Configure email via Gmail API (domain-wide delegation) ---
-su - agent -c "mkdir -p ~/.config/himalaya ~/.config/agents-plane"
+su - agent -c "mkdir -p ~/.config/agents-plane"
 
 # Store SA key for OAuth2 token generation
 echo "\$SA_KEY_JSON" > /home/agent/.config/agents-plane/sa-key.json
 chmod 600 /home/agent/.config/agents-plane/sa-key.json
 chown agent:agent /home/agent/.config/agents-plane/sa-key.json
 
-# Write OAuth2 token helper script (uses SA key to impersonate user via Gmail API)
-cat > /home/agent/.config/agents-plane/get-gmail-token.py << 'TOKENEOF'
+# Install cryptography for JWT signing
+apt-get install -y -qq python3-cryptography
+
+# Write Gmail API email helper (send + read via REST API, no himalaya needed)
+cat > /home/agent/.config/agents-plane/gmail.py << 'GMAILEOF'
 #!/usr/bin/env python3
-"""Get OAuth2 access token for Gmail via domain-wide delegation."""
-import json, time, base64, hashlib, urllib.request, urllib.parse, sys
+"""Gmail API helper — send and read emails via REST API with domain-wide delegation."""
+import json, time, base64, urllib.request, urllib.parse, sys, os
 
 SA_KEY_PATH = "/home/agent/.config/agents-plane/sa-key.json"
 SCOPES = "https://mail.google.com/"
@@ -360,78 +369,74 @@ def sign_rs256(message, private_key_pem):
     key = serialization.load_pem_private_key(private_key_pem.encode(), password=None)
     return key.sign(message.encode(), padding.PKCS1v15(), hashes.SHA256())
 
-def get_token(subject_email):
+def get_token(email):
     with open(SA_KEY_PATH) as f:
         sa = json.load(f)
     now = int(time.time())
     header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}))
     claims = b64url(json.dumps({
-        "iss": sa["client_email"],
-        "sub": subject_email,
-        "scope": SCOPES,
+        "iss": sa["client_email"], "sub": email, "scope": SCOPES,
         "aud": "https://oauth2.googleapis.com/token",
         "iat": now, "exp": now + 3600
     }))
     sig = b64url(sign_rs256(f"{header}.{claims}", sa["private_key"]))
-    jwt = f"{header}.{claims}.{sig}"
     data = urllib.parse.urlencode({
         "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        "assertion": jwt
+        "assertion": f"{header}.{claims}.{sig}"
     }).encode()
     req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data)
+    return json.loads(urllib.request.urlopen(req).read())["access_token"]
+
+def send(from_email, to, subject, body):
+    token = get_token(from_email)
+    msg = f"From: {from_email}\\nTo: {to}\\nSubject: {subject}\\n\\n{body}"
+    raw = base64.urlsafe_b64encode(msg.encode()).decode()
+    req = urllib.request.Request(
+        f"https://gmail.googleapis.com/gmail/v1/users/{from_email}/messages/send",
+        data=json.dumps({"raw": raw}).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    )
     resp = json.loads(urllib.request.urlopen(req).read())
-    print(resp["access_token"])
+    print(json.dumps(resp))
+    return resp
+
+def inbox(email, max_results=5):
+    token = get_token(email)
+    url = f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages?maxResults={max_results}&labelIds=INBOX"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    resp = json.loads(urllib.request.urlopen(req).read())
+    messages = resp.get("messages", [])
+    for m in messages:
+        detail_req = urllib.request.Request(
+            f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages/{m['id']}?format=metadata&metadataHeaders=From&metadataHeaders=Subject",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        detail = json.loads(urllib.request.urlopen(detail_req).read())
+        headers = {h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])}
+        print(f"  {headers.get('From', '?')} — {headers.get('Subject', '(no subject)')}")
+    return messages
 
 if __name__ == "__main__":
-    get_token(sys.argv[1])
-TOKENEOF
-chmod +x /home/agent/.config/agents-plane/get-gmail-token.py
-chown agent:agent /home/agent/.config/agents-plane/get-gmail-token.py
+    if len(sys.argv) < 2:
+        print("Usage: gmail.py send <from> <to> <subject> <body>")
+        print("       gmail.py inbox <email> [max]")
+        print("       gmail.py token <email>")
+        sys.exit(1)
+    cmd = sys.argv[1]
+    if cmd == "send" and len(sys.argv) >= 6:
+        send(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+    elif cmd == "inbox":
+        inbox(sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 5)
+    elif cmd == "token":
+        print(get_token(sys.argv[2]))
+    else:
+        print(f"Unknown command: {cmd}")
+        sys.exit(1)
+GMAILEOF
+chmod +x /home/agent/.config/agents-plane/gmail.py
+chown agent:agent /home/agent/.config/agents-plane/gmail.py
 
-# Install cryptography for JWT signing
-apt-get install -y -qq python3-cryptography
-
-# Install himalaya (email CLI)
-HIMALAYA_VERSION="v1.1.0"
-curl -sL "https://github.com/pimalaya/himalaya/releases/download/\${HIMALAYA_VERSION}/himalaya.x86_64-linux.tgz" | tar xz -C /usr/local/bin/
-chmod +x /usr/local/bin/himalaya
-logger "🤖 Agents Plane: himalaya \${HIMALAYA_VERSION} installed"
-
-DOMAIN=$(echo "\$OWNER_EMAIL" | cut -d@ -f2)
-ACCT_NAME=$(echo "\$DOMAIN" | cut -d. -f1)
-
-# Configure himalaya with OAuth2 via command
-cat > /home/agent/.config/himalaya/config.toml << EMAILEOF
-[accounts.\$ACCT_NAME]
-default = true
-display-name = "Agent \$AGENT_NAME"
-email = "\$OWNER_EMAIL"
-folder.alias.inbox = "INBOX"
-folder.alias.sent = "[Gmail]/Sent Mail"
-folder.alias.drafts = "[Gmail]/Drafts"
-folder.alias.trash = "[Gmail]/Trash"
-
-backend.type = "imap"
-backend.host = "imap.gmail.com"
-backend.port = 993
-backend.encryption = "tls"
-backend.login = "\$OWNER_EMAIL"
-backend.auth.type = "xoauth2"
-backend.auth.access-token.cmd = "python3 /home/agent/.config/agents-plane/get-gmail-token.py \$OWNER_EMAIL"
-
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.gmail.com"
-message.send.backend.port = 465
-message.send.backend.encryption = "tls"
-message.send.backend.login = "\$OWNER_EMAIL"
-message.send.backend.auth.type = "xoauth2"
-message.send.backend.auth.access-token.cmd = "python3 /home/agent/.config/agents-plane/get-gmail-token.py \$OWNER_EMAIL"
-
-message.send.save-copy = false
-EMAILEOF
-chown -R agent:agent /home/agent/.config/himalaya/
-
-logger "🤖 Agents Plane: OpenClaw + Gmail (OAuth2 via domain-wide delegation) configured"
+logger "🤖 Agents Plane: Gmail API helper configured (OAuth2 via domain-wide delegation)"
 
 # --- 12. Start OpenClaw gateway ---
 # OpenClaw uses user-level systemd, so we need lingering + user service

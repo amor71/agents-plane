@@ -89,9 +89,9 @@ test('Installs OpenClaw via npm', () => {
   assert(script.includes('npm install -g openclaw'), 'Missing npm install -g openclaw');
 });
 
-test('Installs himalaya', () => {
-  assert(script.includes('himalaya'), 'Missing himalaya install');
-  assert(script.includes('tar xz'), 'himalaya should be extracted from tarball');
+test('Installs gmail.py helper', () => {
+  assert(script.includes('gmail.py'), 'Missing gmail.py helper');
+  assert(script.includes('gmail.googleapis.com'), 'gmail.py should use Gmail API');
 });
 
 test('Installs python3-cryptography', () => {
@@ -213,89 +213,70 @@ if (authMatch) {
   });
 }
 
-// --- 4. Email Config Tests ---
-console.log('\n📋 Email Config:');
+// --- 4. Gmail API Helper Tests ---
+console.log('\n📋 Gmail API Helper:');
 
-const emailMatch = script.match(/cat > \/home\/agent\/\.config\/himalaya\/config\.toml << EMAILEOF\n([\s\S]*?)\nEMAILEOF/);
-test('himalaya config heredoc found', () => {
-  assert(emailMatch, 'Could not find himalaya config heredoc');
+const gmailMatch = script.match(/cat > \/home\/agent\/\.config\/agents-plane\/gmail\.py << 'GMAILEOF'\n([\s\S]*?)\nGMAILEOF/);
+test('gmail.py heredoc found', () => {
+  assert(gmailMatch, 'Could not find gmail.py heredoc');
 });
 
-if (emailMatch) {
-  const emailConfig = emailMatch[1];
+if (gmailMatch) {
+  const gmailScript = gmailMatch[1];
 
-  test('himalaya config has IMAP backend', () => {
-    assert(emailConfig.includes('backend.type = "imap"'), 'Missing IMAP backend');
-    assert(emailConfig.includes('imap.gmail.com'), 'Missing imap.gmail.com');
+  test('gmail.py uses Gmail REST API', () => {
+    assert(gmailScript.includes('gmail.googleapis.com'), 'Missing Gmail API URL');
   });
 
-  test('himalaya config has SMTP send backend', () => {
-    assert(emailConfig.includes('message.send.backend.type = "smtp"'), 'Missing SMTP send backend');
-    assert(emailConfig.includes('smtp.gmail.com'), 'Missing smtp.gmail.com');
+  test('gmail.py has send function', () => {
+    assert(gmailScript.includes('def send('), 'Missing send function');
   });
 
-  test('himalaya config uses xoauth2', () => {
-    assert(emailConfig.includes('auth.type = "xoauth2"'), 'Missing xoauth2 auth type');
+  test('gmail.py has inbox function', () => {
+    assert(gmailScript.includes('def inbox('), 'Missing inbox function');
   });
 
-  test('himalaya config references token script', () => {
-    assert(emailConfig.includes('get-gmail-token.py'), 'Missing reference to token script');
+  test('gmail.py has token function', () => {
+    assert(gmailScript.includes('def get_token('), 'Missing get_token function');
   });
 
-  test('himalaya config has save-copy = false', () => {
-    assert(emailConfig.includes('save-copy = false'), 'Missing save-copy = false');
+  test('gmail.py uses SA key for auth', () => {
+    assert(gmailScript.includes('sa-key.json'), 'Missing SA key reference');
   });
 
-  test('email address uses owner email', () => {
-    assert(emailConfig.includes('$OWNER_EMAIL') || emailConfig.includes('test@example.com'), 
-      'Email config should reference owner email');
-  });
-}
-
-// --- 5. OAuth2 Token Script Tests ---
-console.log('\n📋 OAuth2 Token Script:');
-
-const tokenMatch = script.match(/cat > \/home\/agent\/\.config\/agents-plane\/get-gmail-token\.py << 'TOKENEOF'\n([\s\S]*?)\nTOKENEOF/);
-test('token script heredoc found', () => {
-  assert(tokenMatch, 'Could not find token script heredoc');
-});
-
-if (tokenMatch) {
-  const tokenScript = tokenMatch[1];
-
-  test('token script uses cryptography library', () => {
-    assert(tokenScript.includes('from cryptography'), 'Missing cryptography import');
+  test('gmail.py uses RS256 signing', () => {
+    assert(gmailScript.includes('RS256'), 'Missing RS256');
   });
 
-  test('token script uses RS256 signing', () => {
-    assert(tokenScript.includes('RS256'), 'Missing RS256 algorithm');
+  test('gmail.py has CLI interface', () => {
+    assert(gmailScript.includes('__main__'), 'Missing __main__ block');
+    assert(gmailScript.includes('sys.argv'), 'Missing sys.argv parsing');
   });
 
-  test('token script targets Gmail scope', () => {
-    assert(tokenScript.includes('mail.google.com'), 'Missing Gmail scope');
-  });
-
-  test('token script reads SA key file', () => {
-    assert(tokenScript.includes('sa-key.json'), 'Missing SA key file reference');
-  });
-
-  test('token script handles CLI arg for email', () => {
-    assert(tokenScript.includes('sys.argv[1]'), 'Missing sys.argv[1] for email arg');
-  });
-
-  // Try to syntax-check the Python
+  // Python syntax check
   try {
-    const tmpFile = '/tmp/test-token-script.py';
-    fs.writeFileSync(tmpFile, tokenScript);
+    const tmpFile = '/tmp/test-gmail-script.py';
+    fs.writeFileSync(tmpFile, gmailScript);
     execSync(`python3 -m py_compile ${tmpFile} 2>&1`);
-    test('token script is valid Python', () => { /* passed if we get here */ });
+    test('gmail.py is valid Python', () => { /* passed */ });
     fs.unlinkSync(tmpFile);
   } catch (e) {
-    test('token script is valid Python', () => {
+    test('gmail.py is valid Python', () => {
       throw new Error(`Python syntax error: ${e.message}`);
     });
   }
 }
+
+// --- 5. BOOTSTRAP.md Email Instructions ---
+console.log('\n📋 BOOTSTRAP.md Email Instructions:');
+
+test('BOOTSTRAP.md mentions gmail.py for sending', () => {
+  assert(script.includes('gmail.py send'), 'BOOTSTRAP.md should tell agent to use gmail.py send');
+});
+
+test('BOOTSTRAP.md has tools section', () => {
+  assert(script.includes('Tools Available'), 'BOOTSTRAP.md should have Tools Available section');
+});
 
 // --- 6. Systemd Service Tests ---
 console.log('\n📋 Systemd Service:');
