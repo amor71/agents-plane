@@ -335,32 +335,32 @@ npm install -g openclaw
 
 # Email handled by send-email.py (Gmail API + SA delegation) — no external deps needed
 
-# Create agent user
-useradd -m -s /bin/bash agent || true
-
-# Setup OpenClaw workspace
-su - agent -c 'mkdir -p ~/.openclaw/workspace'
-
-# Fetch config from Secret Manager
+# Derive agent name from VM instance name (agent-allison → allison)
 INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/name)
 AGENT_NAME="${INSTANCE_NAME#agent-}"
 SECRET_NAME="agent-${AGENT_NAME}-config"
+
+# Create agent user with the agent's own name
+useradd -m -s /bin/bash "$AGENT_NAME" || true
+
+# Setup OpenClaw workspace
+su - "$AGENT_NAME" -c 'mkdir -p ~/.openclaw/workspace'
 PROJECT=$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/project/project-id)
 
 TOKEN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | jq -r '.access_token')
 CONFIG=$(curl -s "https://secretmanager.googleapis.com/v1/projects/${PROJECT}/secrets/${SECRET_NAME}/versions/latest:access" \
   -H "Authorization: Bearer ${TOKEN}" | jq -r '.payload.data' | base64 -d)
 
-echo "$CONFIG" > /home/agent/.openclaw/agent-config.json
-chown agent:agent /home/agent/.openclaw/agent-config.json
+echo "$CONFIG" > /home/$AGENT_NAME/.openclaw/agent-config.json
+chown $AGENT_NAME:$AGENT_NAME /home/$AGENT_NAME/.openclaw/agent-config.json
 
 # Fetch workspace-admin SA key for Gmail API delegation
 SA_KEY=$(curl -s "https://secretmanager.googleapis.com/v1/projects/${PROJECT}/secrets/agents-plane-sa-key/versions/latest:access" \
   -H "Authorization: Bearer ${TOKEN}" | jq -r '.payload.data' | base64 -d 2>/dev/null || echo "")
 if [ -n "$SA_KEY" ]; then
-  echo "$SA_KEY" > /home/agent/.openclaw/workspace-admin-key.json
-  chmod 600 /home/agent/.openclaw/workspace-admin-key.json
-  chown agent:agent /home/agent/.openclaw/workspace-admin-key.json
+  echo "$SA_KEY" > /home/$AGENT_NAME/.openclaw/workspace-admin-key.json
+  chmod 600 /home/$AGENT_NAME/.openclaw/workspace-admin-key.json
+  chown $AGENT_NAME:$AGENT_NAME /home/$AGENT_NAME/.openclaw/workspace-admin-key.json
 fi
 
 # Extract config values
@@ -379,12 +379,12 @@ else
 fi
 
 # Write API key to credential file
-mkdir -p /home/agent/.openclaw/credentials/${API_PROVIDER}
-echo "${API_KEY}" > /home/agent/.openclaw/credentials/${API_PROVIDER}/token
-chmod 600 /home/agent/.openclaw/credentials/${API_PROVIDER}/token
+mkdir -p /home/$AGENT_NAME/.openclaw/credentials/${API_PROVIDER}
+echo "${API_KEY}" > /home/$AGENT_NAME/.openclaw/credentials/${API_PROVIDER}/token
+chmod 600 /home/$AGENT_NAME/.openclaw/credentials/${API_PROVIDER}/token
 
 # Write openclaw.json (the actual config format)
-cat > /home/agent/.openclaw/openclaw.json << OCJSON
+cat > /home/$AGENT_NAME/.openclaw/openclaw.json << OCJSON
 {
   "auth": {
     "profiles": {
@@ -396,7 +396,7 @@ cat > /home/agent/.openclaw/openclaw.json << OCJSON
   },
   "agents": {
     "defaults": {
-      "workspace": "/home/agent/.openclaw/workspace",
+      "workspace": "/home/$AGENT_NAME/.openclaw/workspace",
       "compaction": { "mode": "safeguard" }
     },
     "list": [
@@ -420,7 +420,7 @@ cat > /home/agent/.openclaw/openclaw.json << OCJSON
 OCJSON
 
 # Write AGENTS.md with workspace conventions
-cat > /home/agent/.openclaw/workspace/AGENTS.md << 'AGENTSMD'
+cat > /home/$AGENT_NAME/.openclaw/workspace/AGENTS.md << 'AGENTSMD'
 # AGENTS.md
 
 ## First Run
@@ -437,7 +437,7 @@ Read BOOTSTRAP.md and follow it. Then delete it.
 AGENTSMD
 
 # Write BOOTSTRAP.md — the agent reads this on first boot
-cat > /home/agent/.openclaw/workspace/BOOTSTRAP.md << BSTRAP
+cat > /home/$AGENT_NAME/.openclaw/workspace/BOOTSTRAP.md << BSTRAP
 # Welcome — You've Just Been Born 🤖
 
 You are a brand-new AI agent provisioned by **Agents Plane**.
@@ -479,7 +479,7 @@ BSTRAP
 
 # Set up email sending via Gmail API (using service account with domain-wide delegation)
 # The VM's service account can impersonate the admin to send via Gmail API
-cat > /home/agent/send-email.py << 'EMAILPY'
+cat > /home/$AGENT_NAME/send-email.py << 'EMAILPY'
 #!/usr/bin/env python3
 """Send email via Gmail API using workspace-admin SA with domain-wide delegation."""
 import json, sys, base64, urllib.request, urllib.error, urllib.parse, time, hmac, hashlib
@@ -556,16 +556,16 @@ def send_gmail(to, subject, body, from_addr, key_file):
 
 if __name__ == "__main__":
     # Usage: send-email.py <to> <subject> <body> <from> <sa-key-file>
-    key_file = sys.argv[5] if len(sys.argv) > 5 else "/home/agent/.openclaw/workspace-admin-key.json"
+    key_file = sys.argv[5] if len(sys.argv) > 5 else os.path.expanduser("~/.openclaw/workspace-admin-key.json")
     send_gmail(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], key_file)
 EMAILPY
-chmod +x /home/agent/send-email.py
-chown agent:agent /home/agent/send-email.py
+chmod +x /home/$AGENT_NAME/send-email.py
+chown $AGENT_NAME:$AGENT_NAME /home/$AGENT_NAME/send-email.py
 
-chown -R agent:agent /home/agent/.openclaw
+chown -R $AGENT_NAME:$AGENT_NAME /home/$AGENT_NAME/.openclaw
 
 # Set up openclaw-gateway as a systemd service
-cat > /etc/systemd/system/openclaw-gateway.service << 'SVCUNIT'
+cat > /etc/systemd/system/openclaw-gateway.service << SVCUNIT
 [Unit]
 Description=OpenClaw Gateway
 After=network-online.target
@@ -573,12 +573,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=agent
-WorkingDirectory=/home/agent/.openclaw/workspace
+User=$AGENT_NAME
+WorkingDirectory=/home/$AGENT_NAME/.openclaw/workspace
 ExecStart=/usr/bin/openclaw gateway start
 Restart=on-failure
 RestartSec=10
-Environment=HOME=/home/agent
+Environment=HOME=/home/$AGENT_NAME
 
 [Install]
 WantedBy=multi-user.target
@@ -594,7 +594,7 @@ sleep 10
 # Send welcome email via Gmail API
 ADMIN_FROM=$(echo "$CONFIG" | jq -r '.email_from // .user // ""')
 if [ -n "$ADMIN_FROM" ] && [ "$ADMIN_FROM" != "null" ]; then
-  python3 /home/agent/send-email.py \
+  python3 /home/$AGENT_NAME/send-email.py \
     "${OWNER_EMAIL}" \
     "Your AI Agent is Live! 🤖" \
     "Hi!
@@ -602,7 +602,7 @@ if [ -n "$ADMIN_FROM" ] && [ "$ADMIN_FROM" != "null" ]; then
 Your AI agent has been provisioned and is running on model: ${AGENT_MODEL}
 
 To connect via WhatsApp:
-1. Ask your admin to run: gcloud compute ssh agent-${AGENT_NAME} --tunnel-through-iap -- sudo -u agent openclaw channels login
+1. Ask your admin to run: gcloud compute ssh agent-${AGENT_NAME} --tunnel-through-iap -- sudo -u ${AGENT_NAME} openclaw channels login
 2. A QR code will appear in the terminal
 3. Open WhatsApp on your phone → Settings → Linked Devices → Link a Device
 4. Scan the QR code
