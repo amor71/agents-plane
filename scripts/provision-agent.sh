@@ -355,6 +355,15 @@ CONFIG=$(curl -s "https://secretmanager.googleapis.com/v1/projects/${PROJECT}/se
 echo "$CONFIG" > /home/agent/.openclaw/agent-config.json
 chown agent:agent /home/agent/.openclaw/agent-config.json
 
+# Fetch workspace-admin SA key for Gmail API delegation
+SA_KEY=$(curl -s "https://secretmanager.googleapis.com/v1/projects/${PROJECT}/secrets/agents-plane-sa-key/versions/latest:access" \
+  -H "Authorization: Bearer ${TOKEN}" | jq -r '.payload.data' | base64 -d 2>/dev/null || echo "")
+if [ -n "$SA_KEY" ]; then
+  echo "$SA_KEY" > /home/agent/.openclaw/workspace-admin-key.json
+  chmod 600 /home/agent/.openclaw/workspace-admin-key.json
+  chown agent:agent /home/agent/.openclaw/workspace-admin-key.json
+fi
+
 # Extract config values
 OWNER_EMAIL=$(echo "$CONFIG" | jq -r '.user // .email // "your-admin"')
 AGENT_MODEL=$(echo "$CONFIG" | jq -r '.model // "claude-sonnet"')
@@ -473,27 +482,67 @@ BSTRAP
 # The VM's service account can impersonate the admin to send via Gmail API
 cat > /home/agent/send-email.py << 'EMAILPY'
 #!/usr/bin/env python3
-"""Send email via Gmail API using service account with domain-wide delegation."""
-import json, sys, base64, urllib.request, urllib.error, time, hashlib, hmac
+"""Send email via Gmail API using workspace-admin SA with domain-wide delegation."""
+import json, sys, base64, urllib.request, urllib.error, time, hmac, hashlib
 
-def get_access_token():
-    """Get OAuth2 token from metadata server."""
-    url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
-    req = urllib.request.Request(url, headers={"Metadata-Flavor": "Google"})
+def b64url(data):
+    if isinstance(data, str):
+        data = data.encode()
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+def get_delegated_token(key_file, impersonate_email):
+    """Get OAuth2 token via JWT with domain-wide delegation."""
+    import struct
+    
+    with open(key_file) as f:
+        sa = json.load(f)
+    
+    now = int(time.time())
+    header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}))
+    payload = b64url(json.dumps({
+        "iss": sa["client_email"],
+        "sub": impersonate_email,
+        "scope": "https://www.googleapis.com/auth/gmail.send",
+        "aud": "https://oauth2.googleapis.com/token",
+        "iat": now,
+        "exp": now + 3600
+    }))
+    
+    # Sign with RSA — use openssl since we can't import cryptography
+    import subprocess, tempfile
+    sign_input = f"{header}.{payload}".encode()
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False) as kf:
+        kf.write(sa["private_key"])
+        kf_path = kf.name
+    
+    sig = subprocess.check_output(
+        ["openssl", "dgst", "-sha256", "-sign", kf_path],
+        input=sign_input
+    )
+    import os; os.unlink(kf_path)
+    
+    jwt = f"{header}.{payload}.{b64url(sig)}"
+    
+    # Exchange JWT for access token
+    data = urllib.parse.urlencode({
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": jwt
+    }).encode()
+    req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data)
     resp = json.loads(urllib.request.urlopen(req).read())
     return resp["access_token"]
 
-def send_gmail(to, subject, body, from_addr):
-    """Send email via Gmail API."""
-    token = get_access_token()
+def send_gmail(to, subject, body, from_addr, key_file):
+    """Send email via Gmail API with delegated auth."""
+    import urllib.parse
+    token = get_delegated_token(key_file, from_addr)
     
-    # Build RFC 2822 message
     msg = f"From: {from_addr}\r\nTo: {to}\r\nSubject: {subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}"
     raw = base64.urlsafe_b64encode(msg.encode()).decode()
     
     data = json.dumps({"raw": raw}).encode()
-    # Use 'me' as userId — the SA impersonates the from_addr user
-    url = f"https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+    url = f"https://gmail.googleapis.com/gmail/v1/users/{from_addr}/messages/send"
     req = urllib.request.Request(url, data=data, headers={
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
@@ -506,7 +555,9 @@ def send_gmail(to, subject, body, from_addr):
         print(f"Gmail API error: {e.code} {e.read().decode()}")
 
 if __name__ == "__main__":
-    send_gmail(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+    # Usage: send-email.py <to> <subject> <body> <from> <sa-key-file>
+    key_file = sys.argv[5] if len(sys.argv) > 5 else "/home/agent/.openclaw/workspace-admin-key.json"
+    send_gmail(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], key_file)
 EMAILPY
 chmod +x /home/agent/send-email.py
 chown agent:agent /home/agent/send-email.py
