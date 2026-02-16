@@ -37,16 +37,12 @@ function assert(condition, msg) {
   if (!condition) throw new Error(msg || 'Assertion failed');
 }
 
-// --- Extract startup script from Cloud Function ---
-const cfPath = path.join(__dirname, '..', 'scripts', 'examples', 'cloud-function', 'index.js');
-const cfSource = fs.readFileSync(cfPath, 'utf8');
+// --- Read startup script from standalone file (single source of truth) ---
+const scriptPath = path.join(__dirname, '..', 'scripts', 'startup-script.sh');
+assert(fs.existsSync(scriptPath), 'Could not find scripts/startup-script.sh');
+const rawScript = fs.readFileSync(scriptPath, 'utf8');
 
-// Find the startup script template literal
-const scriptMatch = cfSource.match(/const startupScript = `([\s\S]*?)`;/);
-assert(scriptMatch, 'Could not find startupScript template literal in index.js');
-const rawScript = scriptMatch[1];
-
-// Substitute test values to get a concrete script
+// Test values for substitution checks
 const testVars = {
   AGENT_NAME: 'TestAgent',
   OWNER_EMAIL: 'test@example.com',

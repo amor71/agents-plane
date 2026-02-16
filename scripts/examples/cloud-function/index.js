@@ -41,21 +41,34 @@ exports.provisionAgent = async (req, res) => {
     return res.status(204).send('');
   }
 
-  // Auth
+  // Auth — AUTH_SECRET must be configured
+  if (!AUTH_SECRET) {
+    console.error('AUTH_SECRET not configured — rejecting all requests');
+    return res.status(500).json({ error: 'Server misconfigured' });
+  }
   const authHeader = req.headers.authorization || '';
   const token = authHeader.replace('Bearer ', '');
-  if (AUTH_SECRET && token !== AUTH_SECRET) {
+  if (token !== AUTH_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  // Parse
+  // Parse & validate
   const { email, action, model, budget } = req.body;
-  if (!email) {
-    return res.status(400).json({ error: 'Missing email' });
+  if (!email || typeof email !== 'string' || !email.includes('@')) {
+    return res.status(400).json({ error: 'Missing or invalid email' });
+  }
+  if (action && !['provision', 'deprovision'].includes(action)) {
+    return res.status(400).json({ error: 'Invalid action (must be provision or deprovision)' });
+  }
+  if (budget !== undefined && (typeof budget !== 'number' || budget < 0 || budget > 10000)) {
+    return res.status(400).json({ error: 'Invalid budget (0-10000)' });
   }
 
   const username = email.split('@')[0];
   const safeName = username.replace(/\./g, '-').toLowerCase();
+  if (!/^[a-z0-9-]+$/.test(safeName) || safeName.length > 30) {
+    return res.status(400).json({ error: 'Email username contains invalid characters' });
+  }
   const vmName = `agent-${safeName}`;
 
   try {
@@ -176,7 +189,10 @@ async function provisionAgent(vmName, safeName, email, model = 'claude-opus-4-6'
     serviceAccounts: [
       {
         email: 'default',
-        scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+        scopes: [
+          'https://www.googleapis.com/auth/cloud-platform',  // Needed for Secret Manager access
+          // TODO: narrow to secretmanager + logging only once per-agent SA is standard
+        ],
       },
     ],
     disks: [
