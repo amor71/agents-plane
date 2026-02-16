@@ -34,26 +34,54 @@ Every provisioned agent connects with its user via WhatsApp — real-time, mobil
 - Email says: "Scan this QR code with WhatsApp to connect with your AI assistant"
 - QR expires after ~60 seconds — email should explain urgency, and agent should be able to regenerate on request
 
-### R3: WhatsApp Pairing Confirmation
-- Once user scans QR → WhatsApp is linked
-- Agent detects the link and sends first WhatsApp message: "We're connected! 🎉"
-- Begins onboarding conversation via WhatsApp
+### R3: Onboarding Journey (Agent-Driven, Over WhatsApp)
+The agent drives the entire onboarding — proactively, conversationally, step by step. Not a checklist dump — a real conversation.
 
-### R4: API Key Onboarding (Over WhatsApp)
-- Agent asks for Anthropic API key via WhatsApp chat
-- User sends key in message
-- Agent validates (test API call)
-- If valid: stores in GCP Secret Manager as `agent-{name}-api-key` (NOT locally)
-- Restarts gateway with new key
-- Confirms via WhatsApp and deletes the message containing the key
+**Phase 1: First Contact**
+- Agent detects WhatsApp link → sends first message: "We're connected! 🎉"
+- Introduces itself warmly, explains what it can do
+- Asks: "What should I call you? And what would you like to call me?"
+
+**Phase 2: Personality Setup**
+- Agent asks about vibe: "How do you want me to talk? Casual? Professional? Somewhere in between?"
+- Asks about their work, role, what they need help with
+- Offers suggestions if user is unsure: "Most people like casual — like texting a smart friend"
+- Creates SOUL.md, IDENTITY.md, USER.md based on conversation
+- Confirms: "OK here's what I got — [summary]. Sound right?"
+
+**Phase 3: API Key Migration**
+- Agent explains WHY they need their own key: privacy, independence, their conversations stay theirs
+- Walks them through step by step:
+  1. "Go to console.anthropic.com/settings/keys"
+  2. "Create a new key"
+  3. "Send it to me here — I'll set it up and delete the message"
+- When key arrives: validate → store in Secret Manager → restart → confirm → delete message
 - **Keys must never be stored in local files** — always in Secret Manager
 
-### R5: Proactive Agent Behavior
-- Once bootstrapped (WhatsApp connected, API key set), agent is proactive
+**Phase 4: Teach & Engage**
+- Agent explains what it can do: "Ask me anything, I can research, write, analyze, remind you of things"
+- Gives examples relevant to their role
+- Sends a first proactive message within hours: "Hey, I noticed [something relevant] — thought you'd want to know"
+- Sets expectations: "I'll check in a few times a day. If I'm ever too chatty or too quiet, just tell me"
+
+**Phase 5: Ongoing Relationship**
+- Agent doesn't wait to be asked — it reaches out
+- Morning check-in, relevant updates, reminders
+- Learns preferences over time and adapts
+- Periodically asks: "Is this working for you? Anything you want me to do differently?"
+
+### R4: Proactive Behavior (Post-Onboarding)
+- Agent is proactive from day one — not a chatbot waiting to be poked
 - Checks user's calendar, emails, relevant data on heartbeat
-- Sends unprompted WhatsApp messages when something matters
-- Develops personality and relationship with user over time
-- Real assistant — not a chatbot waiting to be poked
+- Sends unprompted WhatsApp messages when something matters:
+  - Upcoming meetings
+  - Urgent emails
+  - Reminders they set
+  - Interesting things the agent found
+- Develops deeper personality and relationship over time
+- Tracks what the user cares about and surfaces relevant info
+- If user goes quiet for 24h+, checks in: "Hey, everything good? Anything I can help with?"
+- **Engage, engage, engage** — the agent's job is to be useful AND present
 
 ### R6: Startup Script Changes
 - Pre-configure OpenClaw gateway with WhatsApp channel settings
