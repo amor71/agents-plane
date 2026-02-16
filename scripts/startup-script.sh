@@ -362,32 +362,10 @@ if [ "$READY" = false ]; then
   logger "🤖 Agents Plane: Warning — gateway not ready after 60s, continuing anyway"
 fi
 
-# ─── 19. Create bootstrap cron job ───────────────────────────────
-# Triggers the agent's first session to read BOOTSTRAP.md and send welcome email
-BOOTSTRAP_TIME=$(date -u -d "+2 minutes" +%Y-%m-%dT%H:%M:%SZ)
-
-python3 -c "
-import json, urllib.request
-job = {
-    'action': 'add',
-    'job': {
-        'name': 'Bootstrap',
-        'schedule': {'kind': 'at', 'at': '${BOOTSTRAP_TIME}'},
-        'sessionTarget': 'isolated',
-        'payload': {
-            'kind': 'agentTurn',
-            'message': 'You just came online for the first time. Read AGENTS.md and BOOTSTRAP.md in your workspace and follow the instructions. Start with Step 1 — send a welcome email to your owner.'
-        }
-    }
-}
-req = urllib.request.Request(
-    'http://127.0.0.1:18789/api/cron',
-    data=json.dumps(job).encode(),
-    headers={'Authorization': 'Bearer ${GATEWAY_TOKEN}', 'Content-Type': 'application/json'}
-)
-resp = urllib.request.urlopen(req)
-print(resp.read().decode())
-" 2>&1 && logger "🤖 Agents Plane: Bootstrap cron job created" || logger "🤖 Agents Plane: Warning — could not create bootstrap cron job"
+# ─── 19. Bootstrap: first heartbeat will trigger BOOTSTRAP.md ────
+# The agent's first heartbeat (30m default) will read BOOTSTRAP.md
+# and send the welcome email. No cron job needed.
+echo "Agent will bootstrap on first heartbeat (reads BOOTSTRAP.md)"
 
 # ─── 20. Signal completion ───────────────────────────────────────
 echo "AGENT_READY" > /tmp/agent-status
