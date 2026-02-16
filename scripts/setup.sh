@@ -701,12 +701,9 @@ if [[ "$RESUME_STEP" -ge 7 ]]; then
 else
 header "⚙️  Step 7 · Configure Your Agents Plane"
 
-# Derive default plane name from domain
-DEFAULT_NAME="${DOMAIN%%.*}"
-DEFAULT_NAME="$(echo "$DEFAULT_NAME" | sed 's/.*/\u&/')"
-
-echo ""
-prompt_default "Plane name" "$DEFAULT_NAME" PLANE_NAME
+# Use GCP project name as the plane name (no need to ask)
+PLANE_NAME="$PROJECT_ID"
+success "Plane name: $PLANE_NAME (from GCP project)"
 
 echo ""
 echo -e "  ${BOLD}Available regions:${NC}"
@@ -737,7 +734,7 @@ prompt_default "Admin email (for impersonation)" "$CURRENT_ACCOUNT" ADMIN_EMAIL
 echo ""
 echo -e "  ${BOLD}Shared API Key${NC} ${DIM}(used by all agents in this plane)${NC}"
 echo ""
-local api_provider_default="anthropic"
+api_provider_default="anthropic"
 [[ "$DEFAULT_MODEL" == *"gpt"* ]] && api_provider_default="openai"
 prompt_default "API provider" "$api_provider_default" API_PROVIDER
 
