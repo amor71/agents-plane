@@ -498,7 +498,7 @@ job = {
         'sessionTarget': 'isolated',
         'payload': {
             'kind': 'agentTurn',
-            'message': 'You just came online for the first time. Read your workspace files (AGENTS.md, BOOTSTRAP.md) and follow the bootstrap instructions. Send a welcome email to your owner \$OWNER_EMAIL using: python3 /home/agent/.config/agents-plane/gmail.py send \$OWNER_EMAIL \$OWNER_EMAIL \"Hello from your new AI assistant\" \"Hi! I am your new AI assistant. I can help with email, research, writing, coding, and analysis. Reply to this email to get started!\"'
+            'message': 'You just came online for the first time. Read your workspace files (AGENTS.md, BOOTSTRAP.md) and follow the bootstrap instructions. Your first task is to send a welcome email to your owner at \$OWNER_EMAIL. Use the gmail.py script at /home/agent/.config/agents-plane/gmail.py to send it. Introduce yourself warmly.'
         }
     }
 }
