@@ -2,11 +2,11 @@
 
 ## Architecture
 
-```
-User's WhatsApp ←──QR Link──→ Agent VM (OpenClaw Gateway)
-       ↑                              ↑
-  Self-chat                    Baileys linked device
-  ("Message Yourself")         sees messages, responds
+```mermaid
+graph LR
+    User[User's WhatsApp] -->|QR Link| Agent[Agent VM / OpenClaw Gateway]
+    User -->|Self-chat 'Message Yourself'| Agent
+    Agent -->|Baileys linked device| User
 ```
 
 The agent links as a **device on the user's own WhatsApp** — same model OpenClaw uses for personal assistants. User talks to agent via WhatsApp self-chat ("Message Yourself"). No extra phone numbers, no WhatsApp Business API.
@@ -19,42 +19,28 @@ The agent links as a **device on the user's own WhatsApp** — same model OpenCl
 ### The Solution
 Two-step flow: welcome email first (no QR), then QR on demand when user is ready.
 
-```
-Agent VM boots
-  → Gateway starts (WhatsApp NOT linked yet)
-  → Agent runs BOOTSTRAP.md
-  → Sends welcome email (NO QR yet):
-    Subject: "Your AI assistant is ready! 🤖"
-    Body:
-      - Warm intro: what the agent is, what it can do
-      - Explains WhatsApp connection process
-      - "When you're ready to connect, reply to this email with 'connect'"
-      - "I'll immediately send you a QR code to scan with WhatsApp"
-      - "⚠️ The QR code is only valid for 60 seconds, so have your 
-         phone ready with WhatsApp open before you reply!"
-      - Step-by-step preview:
-        1. Reply "connect" to this email
-        2. Open WhatsApp → Settings → Linked Devices → Link a Device
-        3. Scan the QR code from the email I'll send you (within 60 seconds!)
-  → Agent enters waiting mode
+```mermaid
+sequenceDiagram
+    participant Agent as Agent VM
+    participant Email as Gmail API
+    participant User as User
 
-User replies "connect"
-  → Agent detects reply on heartbeat (checks inbox via gmail.py)
-  → Immediately generates QR + starts WhatsApp pairing
-  → Emails QR as image:
-    Subject: "⚡ Scan this QR NOW — expires in 60 seconds!"
-    Body: QR image + short instructions
-  → Waits for connection
+    Agent->>Email: Send welcome email (no QR)
+    Email->>User: "Reply 'connect' when ready (have phone open!)"
+    Note over User: User gets ready, opens WhatsApp
+    User->>Email: Replies "connect"
+    Agent->>Agent: Detects reply on heartbeat
+    Agent->>Agent: Generates QR code
+    Agent->>Email: Sends QR image email
+    Email->>User: "⚡ Scan NOW — 60 seconds!"
+    User->>Agent: Scans QR with WhatsApp
+    Agent->>User: "We're connected! 🎉" (via WhatsApp)
 
-If QR expires (no connection after 90 seconds):
-  → Agent does NOT spam with new QRs
-  → On next heartbeat, if still not connected:
-    - Sends email: "Looks like the QR expired. No worries — reply 'connect' 
-      again when you're ready and I'll send a fresh one."
-  → Cycle repeats until connected
-
-If user replies "connect" again:
-  → Fresh QR generated and emailed immediately
+    alt QR expires
+        Agent->>Email: "QR expired — reply 'connect' again"
+        User->>Email: Replies "connect"
+        Agent->>Email: Fresh QR image
+    end
 ```
 
 ### QR Capture Implementation
@@ -364,21 +350,16 @@ The agent drives this conversation over WhatsApp after QR pairing succeeds:
 
 ## QR Flow — User-Initiated, No Spam
 
-```
-Welcome email (no QR) → explains process, asks user to reply "connect"
-  ↓
-User replies "connect"
-  → Agent generates QR → emails immediately
-  → Waits for WhatsApp connection
-  ↓
-Connected? → 🎉 Start onboarding over WhatsApp
-  ↓
-Not connected (QR expired)?
-  → Next heartbeat: "QR expired — reply 'connect' again when ready"
-  → Wait for user reply
-  ↓
-User replies "connect" again
-  → Fresh QR → repeat
+```mermaid
+flowchart TD
+    A[Welcome email sent] --> B{User replies 'connect'?}
+    B -->|No| C[Wait for next heartbeat]
+    C --> B
+    B -->|Yes| D[Generate QR + email it]
+    D --> E{WhatsApp connected?}
+    E -->|Yes| F[🎉 Start onboarding]
+    E -->|No / QR expired| G[Email: 'reply connect again']
+    G --> B
 ```
 
 No auto-retry spam. User controls the pace. QR is only generated when user is actively waiting.
