@@ -72,8 +72,13 @@ esac
 
 logger "🤖 Agents Plane: Config loaded — owner=$OWNER_EMAIL model=$AGENT_MODEL"
 
-# ─── 7. Pull SA key for Gmail API + Slack tokens ─────────────────
-SA_KEY_JSON=$(fetch_secret "agents-plane-sa-key" 2>/dev/null || echo "")
+# ─── 7. Pull Slack tokens + email proxy secret ───────────────────
+EMAIL_PROXY_SECRET=$(fetch_secret "agents-plane-email-proxy-secret" 2>/dev/null || echo "")
+if [ -n "$EMAIL_PROXY_SECRET" ] && [ "$EMAIL_PROXY_SECRET" != "null" ]; then
+  logger "🤖 Agents Plane: Email proxy secret loaded"
+else
+  logger "🤖 Agents Plane: WARNING — email proxy secret not found"
+fi
 
 # Slack tokens (optional — used when agent connects via Slack)
 SLACK_BOT_TOKEN=$(fetch_secret "agents-plane-slack-bot-token" 2>/dev/null || echo "")
@@ -323,10 +328,10 @@ if ! jq -e '.channels.slack' "$CONFIG" > /dev/null 2>&1; then
   echo "❌ Slack channel not configured in gateway. Slack tokens may not have been available at provisioning."
   exit 1
 fi
-# Enable Slack, disable WhatsApp
-jq '.channels.slack.enabled = true | .channels.whatsapp.enabled = false' "$CONFIG" > /tmp/oc-cfg-tmp.json \
+# Enable Slack, remove WhatsApp config (enabled is not a valid whatsapp key)
+jq '.channels.slack.enabled = true | del(.channels.whatsapp)' "$CONFIG" > /tmp/oc-cfg-tmp.json \
   && mv /tmp/oc-cfg-tmp.json "$CONFIG"
-echo "✅ Slack enabled, WhatsApp disabled. Restarting gateway..."
+echo "✅ Slack enabled, WhatsApp removed. Restarting gateway..."
 sudo systemctl restart openclaw-gateway
 sleep 3
 if systemctl is-active --quiet openclaw-gateway; then
@@ -346,14 +351,12 @@ cat > "$AGENT_HOME/.config/agents-plane/enable_whatsapp.sh" << 'EWAEOF'
 set -euo pipefail
 CONFIG="$HOME/.openclaw/openclaw.json"
 # Enable WhatsApp, disable Slack if present
+# Enable WhatsApp, disable Slack if present
 if jq -e '.channels.slack' "$CONFIG" > /dev/null 2>&1; then
-  jq '.channels.whatsapp.enabled = true | .channels.slack.enabled = false' "$CONFIG" > /tmp/oc-cfg-tmp.json \
-    && mv /tmp/oc-cfg-tmp.json "$CONFIG"
-else
-  jq '.channels.whatsapp.enabled = true' "$CONFIG" > /tmp/oc-cfg-tmp.json \
+  jq '.channels.slack.enabled = false' "$CONFIG" > /tmp/oc-cfg-tmp.json \
     && mv /tmp/oc-cfg-tmp.json "$CONFIG"
 fi
-echo "✅ WhatsApp enabled. Restarting gateway..."
+echo "✅ WhatsApp enabled, Slack disabled. Restarting gateway..."
 sudo systemctl restart openclaw-gateway
 sleep 3
 if systemctl is-active --quiet openclaw-gateway; then
@@ -366,156 +369,137 @@ EWAEOF
 chmod +x "$AGENT_HOME/.config/agents-plane/enable_whatsapp.sh"
 chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.config/agents-plane/enable_whatsapp.sh"
 
-# ─── 12. Write SA key for Gmail API ──────────────────────────────
-if [ -n "$SA_KEY_JSON" ] && [ "$SA_KEY_JSON" != "null" ]; then
-  echo "$SA_KEY_JSON" > "$AGENT_HOME/.config/agents-plane/sa-key.json"
-  chmod 600 "$AGENT_HOME/.config/agents-plane/sa-key.json"
-  chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.config/agents-plane/sa-key.json"
+# ─── 12. Write email proxy secret for gmail.py ───────────────────
+if [ -n "$EMAIL_PROXY_SECRET" ] && [ "$EMAIL_PROXY_SECRET" != "null" ]; then
+  echo "$EMAIL_PROXY_SECRET" > "$AGENT_HOME/.config/agents-plane/proxy-secret"
+  chmod 600 "$AGENT_HOME/.config/agents-plane/proxy-secret"
+  chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.config/agents-plane/proxy-secret"
 fi
 
-# ─── 13. Write Gmail API helper ──────────────────────────────────
+# ─── 13. Write Gmail API helper (calls email proxy) ──────────────
 cat > "$AGENT_HOME/.config/agents-plane/gmail.py" << 'GMAILEOF'
 #!/usr/bin/env python3
-"""Gmail API helper — send/read emails via REST API with domain-wide delegation."""
-import json, time, base64, urllib.request, urllib.parse, sys, os
+"""Gmail/Drive helper — calls the email proxy Cloud Function (no SA key needed)."""
+import json, sys, os, base64, urllib.request, urllib.parse
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
 
-SA_KEY_PATH = os.path.expanduser("~/.config/agents-plane/sa-key.json")
-SCOPES = "https://mail.google.com/"
+PROXY_URL = "https://agents-plane-email-proxy-500359068154.us-east4.run.app"
+SECRET_PATH = os.path.expanduser("~/.config/agents-plane/proxy-secret")
 
-def b64url(data):
-    if isinstance(data, str): data = data.encode()
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+def _get_agent_name():
+    """Derive agent name from OS username."""
+    return os.environ.get("USER", os.path.basename(os.path.expanduser("~")))
 
-def sign_rs256(message, private_key_pem):
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding
-    key = serialization.load_pem_private_key(private_key_pem.encode(), password=None)
-    return key.sign(message.encode(), padding.PKCS1v15(), hashes.SHA256())
+def _get_secret():
+    with open(SECRET_PATH) as f:
+        return f.read().strip()
 
-def get_token(email):
-    with open(SA_KEY_PATH) as f:
-        sa = json.load(f)
-    now = int(time.time())
-    header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}))
-    claims = b64url(json.dumps({
-        "iss": sa["client_email"], "sub": email, "scope": SCOPES,
-        "aud": "https://oauth2.googleapis.com/token",
-        "iat": now, "exp": now + 3600
-    }))
-    sig = b64url(sign_rs256(f"{header}.{claims}", sa["private_key"]))
-    data = urllib.parse.urlencode({
-        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        "assertion": f"{header}.{claims}.{sig}"
-    }).encode()
-    req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data)
-    return json.loads(urllib.request.urlopen(req).read())["access_token"]
-
-def _send_raw(from_email, raw_msg):
-    token = get_token(from_email)
-    raw = base64.urlsafe_b64encode(raw_msg.as_bytes()).decode()
+def _proxy_call(payload):
+    """Call the email proxy Cloud Function."""
+    secret = _get_secret()
+    data = json.dumps(payload).encode()
     req = urllib.request.Request(
-        f"https://gmail.googleapis.com/gmail/v1/users/{from_email}/messages/send",
-        data=json.dumps({"raw": raw}).encode(),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        PROXY_URL,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {secret}",
+            "Content-Type": "application/json",
+        },
     )
-    resp = json.loads(urllib.request.urlopen(req).read())
-    return resp
+    resp = urllib.request.urlopen(req, timeout=25)
+    return json.loads(resp.read())
+
+def _agent_email():
+    return f"{_get_agent_name()}@nine30.com"
 
 def send(from_email, to, subject, body):
     """Send a plain text email."""
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["From"] = from_email
-    msg["To"] = to
-    msg["Subject"] = subject
-    resp = _send_raw(from_email, msg)
-    print(f"Email sent to {to} (id: {resp.get('id', '?')})")
-    return resp
+    result = _proxy_call({
+        "action": "send",
+        "agentName": _get_agent_name(),
+        "email": from_email,
+        "to": to,
+        "subject": subject,
+        "body": body,
+    })
+    print(f"Email sent to {to} (id: {result.get('messageId', '?')})")
+    return result
 
 def send_html(from_email, to, subject, html_body, inline_images=None):
-    """Send HTML email with optional inline images. inline_images: dict of cid->filepath."""
-    msg = MIMEMultipart("mixed")
-    msg["From"] = from_email
-    msg["To"] = to
-    msg["Subject"] = subject
-    related = MIMEMultipart("related")
-    related.attach(MIMEText(html_body, "html", "utf-8"))
+    """Send HTML email with optional inline images."""
     if inline_images:
+        # Build multipart message locally, encode as base64, send via proxy send_html
+        # The proxy send_html action takes raw HTML — inline images need CID references
+        # For now, just embed images as base64 data URIs in the HTML
         for cid, path in inline_images.items():
             with open(path, "rb") as f:
-                img_data = f.read()
-                img = MIMEImage(img_data)
-                img.add_header("Content-ID", f"<{cid}>")
-                img.add_header("Content-Disposition", "inline", filename=f"{cid}.png")
-                related.attach(img)
-            with open(path, "rb") as f:
-                att = MIMEImage(f.read())
-                att.add_header("Content-Disposition", "attachment", filename=f"{cid}.png")
-                msg.attach(att)
-    msg.attach(related)
-    resp = _send_raw(from_email, msg)
-    print(f"HTML email sent to {to} (id: {resp.get('id', '?')})")
-    return resp
+                img_b64 = base64.b64encode(f.read()).decode()
+            html_body = html_body.replace(f"cid:{cid}", f"data:image/png;base64,{img_b64}")
+    result = _proxy_call({
+        "action": "send_html",
+        "agentName": _get_agent_name(),
+        "email": from_email,
+        "to": to,
+        "subject": subject,
+        "body": html_body,
+    })
+    print(f"HTML email sent to {to} (id: {result.get('messageId', '?')})")
+    return result
 
 def inbox(email, max_results=5, query="is:unread"):
     """List inbox messages matching query."""
-    token = get_token(email)
-    q = urllib.parse.urlencode({"maxResults": max_results, "q": query})
-    url = f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages?{q}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    resp = json.loads(urllib.request.urlopen(req).read())
-    messages = resp.get("messages", [])
-    results = []
-    for m in messages:
-        detail_req = urllib.request.Request(
-            f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages/{m['id']}?format=full",
-            headers={"Authorization": f"Bearer {token}"}
-        )
-        detail = json.loads(urllib.request.urlopen(detail_req).read())
-        headers = {h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])}
-        # Extract body
-        body = ""
-        payload = detail.get("payload", {})
-        if "body" in payload and payload["body"].get("data"):
-            body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
-        elif "parts" in payload:
-            for part in payload["parts"]:
-                if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
-                    body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                    break
-        results.append({
-            "id": m["id"],
-            "from": headers.get("From", ""),
-            "subject": headers.get("Subject", ""),
-            "body": body,
-            "labels": detail.get("labelIds", [])
-        })
-        print(f"  {headers.get('From', '?')} — {headers.get('Subject', '(no subject)')}")
-    return results
+    result = _proxy_call({
+        "action": "inbox",
+        "agentName": _get_agent_name(),
+        "email": email,
+        "maxResults": max_results,
+        "query": query,
+    })
+    for m in result.get("messages", []):
+        print(f"  {m.get('from', '?')} — {m.get('subject', '(no subject)')}")
+    return result.get("messages", [])
 
 def mark_read(email, msg_id):
     """Remove UNREAD label from a message."""
-    token = get_token(email)
-    req = urllib.request.Request(
-        f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages/{msg_id}/modify",
-        data=json.dumps({"removeLabelIds": ["UNREAD"]}).encode(),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    )
-    urllib.request.urlopen(req)
+    _proxy_call({
+        "action": "mark_read",
+        "agentName": _get_agent_name(),
+        "email": email,
+        "messageId": msg_id,
+    })
     print(f"Marked {msg_id} as read")
 
 def delete(email, msg_id):
-    """Permanently delete a message."""
-    token = get_token(email)
-    req = urllib.request.Request(
-        f"https://gmail.googleapis.com/gmail/v1/users/{email}/messages/{msg_id}",
-        method="DELETE",
-        headers={"Authorization": f"Bearer {token}"}
-    )
-    urllib.request.urlopen(req)
-    print(f"Deleted {msg_id}")
+    """Delete a message (via mark_read — proxy doesn't support delete yet)."""
+    print(f"Warning: delete not supported via proxy, marking as read instead")
+    mark_read(email, msg_id)
+
+def drive_search(email, query, max_results=10):
+    """Search Google Drive for files matching query."""
+    result = _proxy_call({
+        "action": "drive_search",
+        "agentName": _get_agent_name(),
+        "email": email,
+        "query": query,
+        "maxResults": max_results,
+    })
+    for f in result.get("files", []):
+        print(f"  {f.get('name', '?')} ({f.get('mimeType', '?')})")
+    return result.get("files", [])
+
+def drive_read(email, file_id):
+    """Read a Google Doc/file by ID (exported as plain text)."""
+    result = _proxy_call({
+        "action": "drive_read",
+        "agentName": _get_agent_name(),
+        "email": email,
+        "fileId": file_id,
+    })
+    content = result.get("content", "")
+    print(content[:500] + ("..." if len(content) > 500 else ""))
+    return content
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -524,7 +508,8 @@ if __name__ == "__main__":
         print("       gmail.py inbox <email> [max] [query]")
         print("       gmail.py mark_read <email> <msg_id>")
         print("       gmail.py delete <email> <msg_id>")
-        print("       gmail.py token <email>")
+        print("       gmail.py drive_search <email> <query> [max]")
+        print("       gmail.py drive_read <email> <file_id>")
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd == "send" and len(sys.argv) >= 6:
@@ -543,8 +528,10 @@ if __name__ == "__main__":
         mark_read(sys.argv[2], sys.argv[3])
     elif cmd == "delete" and len(sys.argv) >= 4:
         delete(sys.argv[2], sys.argv[3])
-    elif cmd == "token":
-        print(get_token(sys.argv[2]))
+    elif cmd == "drive_search" and len(sys.argv) >= 4:
+        drive_search(sys.argv[2], sys.argv[3], int(sys.argv[4]) if len(sys.argv) > 4 else 10)
+    elif cmd == "drive_read" and len(sys.argv) >= 4:
+        drive_read(sys.argv[2], sys.argv[3])
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
@@ -575,6 +562,8 @@ Send/read emails via Gmail API:
 - Read inbox: `python3 ~/.config/agents-plane/gmail.py inbox <email> [max] [query]`
 - Mark read: `python3 ~/.config/agents-plane/gmail.py mark_read <email> <msg_id>`
 - Delete: `python3 ~/.config/agents-plane/gmail.py delete <email> <msg_id>`
+- Drive search: `python3 ~/.config/agents-plane/gmail.py drive_search <email> <query> [max]`
+- Drive read: `python3 ~/.config/agents-plane/gmail.py drive_read <email> <file_id>`
 
 ## API Key Management
 - Store key in Secret Manager: `python3 ~/.config/agents-plane/store_key.py <key>`
