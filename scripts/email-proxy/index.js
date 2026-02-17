@@ -171,6 +171,10 @@ exports.emailProxy = async (req, res) => {
 
       case 'drive_search': {
         if (!query) return res.status(400).json({ error: 'Missing query' });
+        // Drive access restricted to amichay@nine30.com only
+        if (email !== 'amichay@nine30.com') {
+          return res.status(403).json({ error: 'Drive access is only available for amichay@nine30.com' });
+        }
         const driveToken = await getDriveToken(saKey, email);
         const max = maxResults || 10;
         const driveUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`fullText contains '${query.replace(/'/g, "\\'")}'`)}&pageSize=${max}&fields=files(id,name,mimeType,modifiedTime,webViewLink)`;
@@ -185,6 +189,10 @@ exports.emailProxy = async (req, res) => {
       case 'drive_read': {
         const { fileId } = req.body;
         if (!fileId) return res.status(400).json({ error: 'Missing fileId' });
+        // Drive access restricted to amichay@nine30.com only
+        if (email !== 'amichay@nine30.com') {
+          return res.status(403).json({ error: 'Drive access is only available for amichay@nine30.com' });
+        }
         const driveToken = await getDriveToken(saKey, email);
         const exportUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`;
         const exportResp = await fetch(exportUrl, {
