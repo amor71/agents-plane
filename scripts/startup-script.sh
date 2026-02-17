@@ -72,8 +72,19 @@ esac
 
 logger "🤖 Agents Plane: Config loaded — owner=$OWNER_EMAIL model=$AGENT_MODEL"
 
-# ─── 7. Pull SA key for Gmail API ────────────────────────────────
+# ─── 7. Pull SA key for Gmail API + Slack tokens ─────────────────
 SA_KEY_JSON=$(fetch_secret "agents-plane-sa-key" 2>/dev/null || echo "")
+
+# Slack tokens (optional — used when agent connects via Slack)
+SLACK_BOT_TOKEN=$(fetch_secret "agents-plane-slack-bot-token" 2>/dev/null || echo "")
+SLACK_APP_TOKEN=$(fetch_secret "agents-plane-slack-app-token" 2>/dev/null || echo "")
+if [ -n "$SLACK_BOT_TOKEN" ] && [ "$SLACK_BOT_TOKEN" != "null" ]; then
+  SLACK_AVAILABLE=true
+  logger "🤖 Agents Plane: Slack tokens loaded"
+else
+  SLACK_AVAILABLE=false
+  logger "🤖 Agents Plane: No Slack tokens found (Slack channel unavailable)"
+fi
 
 # ─── 8. Set up agent workspace ───────────────────────────────────
 AGENT_HOME="/home/$AGENT_NAME"
@@ -234,6 +245,27 @@ chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.config/agents-plane/send_qr.py"
 
 # ─── 11. Write gateway config ────────────────────────────────────
 GATEWAY_TOKEN=$(openssl rand -hex 32)
+
+# Build Slack channel config block (if tokens available)
+if [ "$SLACK_AVAILABLE" = true ]; then
+  SLACK_CHANNEL_CONFIG=$(cat << SLACKEOF
+    "slack": {
+      "enabled": false,
+      "mode": "socket",
+      "appToken": "${SLACK_APP_TOKEN}",
+      "botToken": "${SLACK_BOT_TOKEN}",
+      "dm": {
+        "enabled": true,
+        "policy": "open",
+        "allowFrom": ["*"]
+      }
+    },
+SLACKEOF
+)
+else
+  SLACK_CHANNEL_CONFIG=""
+fi
+
 cat > "$AGENT_HOME/.openclaw/openclaw.json" << CFGEOF
 {
   "agents": {
@@ -255,6 +287,7 @@ cat > "$AGENT_HOME/.openclaw/openclaw.json" << CFGEOF
     ]
   },
   "channels": {
+    ${SLACK_CHANNEL_CONFIG}
     "whatsapp": {
       "dmPolicy": "allowlist",
       "allowFrom": ["*"],
@@ -278,6 +311,60 @@ cat > "$AGENT_HOME/.openclaw/openclaw.json" << CFGEOF
 }
 CFGEOF
 chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.openclaw/openclaw.json"
+
+# ─── 11b. Write channel switcher scripts ─────────────────────────
+# enable_slack.sh — switches gateway from WhatsApp to Slack
+cat > "$AGENT_HOME/.config/agents-plane/enable_slack.sh" << 'ESLACKEOF'
+#!/bin/bash
+# Switch gateway channel from WhatsApp to Slack
+set -euo pipefail
+CONFIG="$HOME/.openclaw/openclaw.json"
+if ! jq -e '.channels.slack' "$CONFIG" > /dev/null 2>&1; then
+  echo "❌ Slack channel not configured in gateway. Slack tokens may not have been available at provisioning."
+  exit 1
+fi
+# Enable Slack, disable WhatsApp
+jq '.channels.slack.enabled = true | .channels.whatsapp.enabled = false' "$CONFIG" > /tmp/oc-cfg-tmp.json \
+  && mv /tmp/oc-cfg-tmp.json "$CONFIG"
+echo "✅ Slack enabled, WhatsApp disabled. Restarting gateway..."
+sudo systemctl restart openclaw-gateway
+sleep 3
+if systemctl is-active --quiet openclaw-gateway; then
+  echo "✅ Gateway restarted successfully with Slack channel"
+else
+  echo "❌ Gateway failed to start. Check: journalctl -u openclaw-gateway -n 20"
+  exit 1
+fi
+ESLACKEOF
+chmod +x "$AGENT_HOME/.config/agents-plane/enable_slack.sh"
+chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.config/agents-plane/enable_slack.sh"
+
+# enable_whatsapp.sh — switches gateway from Slack to WhatsApp (or re-enables)
+cat > "$AGENT_HOME/.config/agents-plane/enable_whatsapp.sh" << 'EWAEOF'
+#!/bin/bash
+# Switch gateway channel from Slack to WhatsApp
+set -euo pipefail
+CONFIG="$HOME/.openclaw/openclaw.json"
+# Enable WhatsApp, disable Slack if present
+if jq -e '.channels.slack' "$CONFIG" > /dev/null 2>&1; then
+  jq '.channels.whatsapp.enabled = true | .channels.slack.enabled = false' "$CONFIG" > /tmp/oc-cfg-tmp.json \
+    && mv /tmp/oc-cfg-tmp.json "$CONFIG"
+else
+  jq '.channels.whatsapp.enabled = true' "$CONFIG" > /tmp/oc-cfg-tmp.json \
+    && mv /tmp/oc-cfg-tmp.json "$CONFIG"
+fi
+echo "✅ WhatsApp enabled. Restarting gateway..."
+sudo systemctl restart openclaw-gateway
+sleep 3
+if systemctl is-active --quiet openclaw-gateway; then
+  echo "✅ Gateway restarted successfully with WhatsApp channel"
+else
+  echo "❌ Gateway failed to start. Check: journalctl -u openclaw-gateway -n 20"
+  exit 1
+fi
+EWAEOF
+chmod +x "$AGENT_HOME/.config/agents-plane/enable_whatsapp.sh"
+chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.config/agents-plane/enable_whatsapp.sh"
 
 # ─── 12. Write SA key for Gmail API ──────────────────────────────
 if [ -n "$SA_KEY_JSON" ] && [ "$SA_KEY_JSON" != "null" ]; then
@@ -495,10 +582,18 @@ Send/read emails via Gmail API:
 - The key is fetched from Secret Manager on every gateway start — never stored locally.
 - **NEVER** store API keys in memory files, logs, workspace files, or chat history.
 
-## WhatsApp
-- WhatsApp channel is pre-configured in the gateway
-- To link: `openclaw channels login --channel whatsapp` (generates QR code)
+## Channels (WhatsApp or Slack)
+Your gateway supports WhatsApp and/or Slack. Only one is active at a time.
+
+### WhatsApp
+- To link: \`openclaw channels login --channel whatsapp\` (generates QR code)
 - After linking, user talks to you via WhatsApp self-chat ("Message Yourself")
+
+### Slack
+- Pre-configured with bot/app tokens if available
+- To switch to Slack: \`bash ~/.config/agents-plane/enable_slack.sh\`
+- To switch back to WhatsApp: \`bash ~/.config/agents-plane/enable_whatsapp.sh\`
+- User DMs the bot on Slack
 
 ## Safety
 - Don't exfiltrate private data. Ever.
@@ -508,6 +603,18 @@ AGENTSEOF
 chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.openclaw/workspace/AGENTS.md"
 
 # ─── 15. Write BOOTSTRAP.md ──────────────────────────────────────
+
+# Determine available channels for the welcome email
+if [ "$SLACK_AVAILABLE" = true ]; then
+  CHANNEL_OPTIONS="You have two options:
+- Reply **connect whatsapp** — I'll send you a QR code to scan with WhatsApp
+- Reply **connect slack** — I'll message you directly on Slack (easier!)"
+  CHANNEL_INSTRUCTIONS="If they choose WhatsApp, warn them the QR code expires in 60 seconds. If they choose Slack, just tell them you'll DM them on Slack — simple!"
+else
+  CHANNEL_OPTIONS="When you're ready, reply **connect** and I'll send you a QR code to link WhatsApp."
+  CHANNEL_INSTRUCTIONS="Warn them the QR code expires in 60 seconds, so have WhatsApp ready."
+fi
+
 cat > "$AGENT_HOME/.openclaw/workspace/BOOTSTRAP.md" << BSTRAPEOF
 # Welcome — You've Just Been Born 🤖
 
@@ -516,22 +623,20 @@ You are a brand-new AI agent provisioned by **Agents Plane**.
 ## Who You Belong To
 - **Owner email:** ${OWNER_EMAIL}
 - **Your email (for sending):** ${OWNER_EMAIL}
+- **Slack available:** ${SLACK_AVAILABLE}
 
 ## Step 1: Send Welcome Email
 
-Send an email to your owner introducing yourself and explaining how to connect via WhatsApp.
+Send an email to your owner introducing yourself and explaining how to connect.
 
 The email MUST include:
 1. A warm, friendly introduction — who you are, what you can help with
-2. Clear explanation that you'll communicate via **WhatsApp**
-3. Instructions: "When you're ready to connect, **reply to this email** with the word **connect**"
-4. A warning: "I'll send you a QR code to scan with WhatsApp. **The QR code is only valid for about 60 seconds**, so have your phone ready with WhatsApp open before you reply!"
-5. Step-by-step preview of what will happen:
-   - You reply "connect" to this email
-   - I'll send you a QR code image
-   - Open WhatsApp → Settings → Linked Devices → Link a Device
-   - Scan the QR code within 60 seconds
-   - We're connected! We'll chat on WhatsApp from then on.
+2. How to connect — give them a choice of channels:
+
+${CHANNEL_OPTIONS}
+
+3. ${CHANNEL_INSTRUCTIONS}
+4. Step-by-step preview of what will happen for each option.
 
 Use the gmail.py helper:
 \`\`\`bash
@@ -540,42 +645,75 @@ python3 ~/.config/agents-plane/gmail.py send ${OWNER_EMAIL} ${OWNER_EMAIL} "Your
 
 Make the email YOUR OWN — warm, personal, not robotic. You're introducing yourself for the first time.
 
-After sending, write a note in memory/ that you sent the welcome email and are waiting for "connect" reply.
+After sending, write a note in memory/ that you sent the welcome email and are waiting for their reply.
 
-## Step 2: Wait for "connect" Reply
+## Step 2: Wait for Reply
 
 On each heartbeat, check your inbox for a reply:
 \`\`\`bash
-python3 ~/.config/agents-plane/gmail.py inbox ${OWNER_EMAIL} 5 "is:unread subject:connect OR is:unread from:${OWNER_EMAIL}"
+python3 ~/.config/agents-plane/gmail.py inbox ${OWNER_EMAIL} 5 "is:unread from:${OWNER_EMAIL}"
 \`\`\`
 
-When you find a reply containing "connect":
-1. Mark it as read
+When you find a reply, check what they chose:
+
+### Option A: "connect whatsapp" (or just "connect")
+
+1. Mark the email as read
 2. Call the \`whatsapp_login\` tool — it returns a QR as a data:image/png;base64 string
-3. **IMMEDIATELY** (same tool call sequence, no thinking) extract the base64 data and pipe it to send_qr.py:
+3. **IMMEDIATELY** extract the base64 data and pipe it to send_qr.py:
 \`\`\`bash
 echo "BASE64_DATA_HERE" | python3 ~/.config/agents-plane/send_qr.py ${OWNER_EMAIL} -
 \`\`\`
-   Replace BASE64_DATA_HERE with the full base64 string from the whatsapp_login response (strip the \`data:image/png;base64,\` prefix first).
+   Replace BASE64_DATA_HERE with the full base64 string (strip the \`data:image/png;base64,\` prefix).
 
-⚠️ **CRITICAL: The QR expires in ~60 seconds.** You MUST call send_qr.py in your very next tool call after whatsapp_login. Do NOT think, plan, or explain — just extract the base64 and pipe it to the script immediately.
+⚠️ **CRITICAL: The QR expires in ~60 seconds.** You MUST call send_qr.py in your very next tool call after whatsapp_login. Do NOT think, plan, or explain — just extract and pipe immediately.
 
-## Step 3: Confirm WhatsApp Connection
+Then go to **Step 3A**.
+
+### Option B: "connect slack"
+
+1. Mark the email as read
+2. Switch the gateway to Slack:
+\`\`\`bash
+bash ~/.config/agents-plane/enable_slack.sh
+\`\`\`
+3. Wait a few seconds for the gateway to restart
+4. Send them a DM on Slack using the message tool:
+   - Use \`message\` action=send, channel=slack
+   - Find their Slack user by email or ask them for their Slack display name
+   - Send: "Hey! 👋 We're connected on Slack! I'm your new AI assistant."
+5. If you can't find their Slack user, email them asking for their Slack username/email
+
+Then go to **Step 3B**.
+
+## Step 3A: Confirm WhatsApp Connection
 
 After sending the QR, check if WhatsApp connected:
 \`\`\`bash
 openclaw channels status
 \`\`\`
 
-If connected — send your first WhatsApp message! Something like:
+If connected — send your first WhatsApp message:
 "Hey! 👋 We're connected! I'm your new AI assistant. What should I call you?"
 
 If NOT connected after a heartbeat cycle — send an email:
-"Looks like the QR expired — no worries! Reply 'connect' again when you're ready and I'll send a fresh one."
+"Looks like the QR expired — no worries! Reply 'connect' (or 'connect slack' to try Slack instead) and we'll try again."
 
-## Step 4: Onboard Over WhatsApp
+Then proceed to **Step 4**.
 
-Once connected, drive the conversation:
+## Step 3B: Confirm Slack Connection
+
+Verify the gateway is running with Slack:
+\`\`\`bash
+openclaw channels status
+\`\`\`
+
+The Slack channel should show as connected. Send a DM to your owner on Slack.
+If they respond — you're connected! Proceed to **Step 4**.
+
+## Step 4: Onboard Over Chat
+
+Once connected (WhatsApp or Slack), drive the conversation:
 
 **Phase 1 — Get to know each other:**
 - Ask their name, what to call them
@@ -594,13 +732,13 @@ Once connected, drive the conversation:
 - Guide them:
   1. Go to console.anthropic.com/settings/keys
   2. Create a new key
-  3. Send it to me here on WhatsApp
+  3. Send it to me here
 - When they send the key:
   1. Validate it (make a test API call)
   2. Store it: \`python3 ~/.config/agents-plane/store_key.py <key>\`
   3. Restart: \`sudo systemctl restart openclaw-gateway\`
   4. Confirm you're back and working
-  5. Delete the WhatsApp message containing the key
+  5. Delete the message containing the key
 
 **Phase 4 — Engage:**
 - Show what you can do with examples relevant to their role
@@ -609,7 +747,7 @@ Once connected, drive the conversation:
 
 ## Step 5: Delete This File
 
-Once onboarding is complete (WhatsApp connected, personality set, key migrated):
+Once onboarding is complete (connected, personality set, key migrated):
 Delete this BOOTSTRAP.md — you don't need it anymore. You're you now.
 BSTRAPEOF
 chown "$AGENT_NAME:$AGENT_NAME" "$AGENT_HOME/.openclaw/workspace/BOOTSTRAP.md"
@@ -624,16 +762,17 @@ Follow BOOTSTRAP.md strictly. Check which step you're on by reading memory/ file
 ### If welcome email not sent yet:
 - Send it now (Step 1 of BOOTSTRAP.md)
 
-### If waiting for "connect" reply:
+### If waiting for reply:
 - Check inbox: \`python3 ~/.config/agents-plane/gmail.py inbox ${OWNER_EMAIL} 5 "is:unread"\`
-- If "connect" found → proceed to QR step (Step 2)
+- If "connect whatsapp" or "connect" found → WhatsApp QR flow (Step 2, Option A)
+- If "connect slack" found → Slack flow (Step 2, Option B)
 
 ### If QR was sent but WhatsApp not connected:
 - Check: \`openclaw channels status\`
-- If still not connected → email "QR expired, reply 'connect' again"
+- If still not connected → email "QR expired, reply 'connect' again (or try 'connect slack')"
 
-### If WhatsApp connected but onboarding incomplete:
-- Continue onboarding conversation (Steps 3-4)
+### If channel connected but onboarding incomplete:
+- Continue onboarding conversation (Step 4)
 
 ## Normal Operation (no BOOTSTRAP.md)
 - If nothing needs attention, reply HEARTBEAT_OK
