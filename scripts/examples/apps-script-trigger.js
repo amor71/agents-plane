@@ -91,6 +91,29 @@ function createCustomSchema() {
   }
 }
 
+// ─── Retry Helper ────────────────────────────────────────────────
+
+/**
+ * Retry a function with exponential backoff.
+ * Handles transient Google API errors (INTERNAL, empty responses, etc.)
+ */
+function withRetry(fn, maxAttempts = 3) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = fn();
+      return result;
+    } catch (e) {
+      const isTransient = /INTERNAL|Empty response|timeout|unavailable/i.test(e.message);
+      if (attempt === maxAttempts || !isTransient) {
+        throw e;
+      }
+      const delayMs = Math.pow(2, attempt) * 1000; // 2s, 4s
+      Logger.log(`⚠️ Attempt ${attempt} failed (${e.message}), retrying in ${delayMs}ms...`);
+      Utilities.sleep(delayMs);
+    }
+  }
+}
+
 // ─── Polling for Changes ─────────────────────────────────────────
 
 /**
@@ -104,13 +127,13 @@ function pollForAgentChanges() {
 
   let pageToken = null;
   do {
-    const page = AdminDirectory.Users.list({
+    const page = withRetry(() => AdminDirectory.Users.list({
       customer: 'my_customer',
       projection: 'full',
       customFieldMask: CONFIG.SCHEMA_NAME,
       maxResults: 100,
       pageToken: pageToken,
-    });
+    }));
 
     if (!page.users) break;
 
